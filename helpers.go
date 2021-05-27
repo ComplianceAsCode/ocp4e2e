@@ -28,7 +28,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	extscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
-	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -102,12 +101,16 @@ func init() {
 func newE2EContext(t *testing.T) *e2econtext {
 	rootdir := os.Getenv("ROOT_DIR")
 	if rootdir == "" {
-		rootdir = "../../"
+		var cloneErr error
+		rootdir, cloneErr = cloneContentDir()
+		if cloneErr != nil {
+			t.Fatalf("Unable to clone content dir: %s", cloneErr)
+		}
+		os.Setenv("ROOT_DIR", rootdir)
 	}
 
 	profilefile := fmt.Sprintf("%s.profile", profile)
-	productpath := path.Join(rootdir, product)
-	benchmarkRoot, err := getBenchmarkRootFromProductSpec(productpath)
+	productpath, benchmarkRoot, err := getBenchmarkRootFromProductSpec(rootdir, product)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,21 +130,43 @@ func newE2EContext(t *testing.T) *e2econtext {
 	}
 }
 
-func getBenchmarkRootFromProductSpec(productpath string) (string, error) {
-	prodyamlpath := path.Join(productpath, "product.yml")
+func cloneContentDir() (string, error) {
+	dir, tmperr := ioutil.TempDir("", "content-*")
+	if tmperr != nil {
+		return "", fmt.Errorf("couldn't create tmpdir: %w", tmperr)
+	}
+	_, cmderr := exec.Command("/usr/bin/git", "clone",
+		"https://github.com/ComplianceAsCode/content.git", dir).CombinedOutput()
+	if cmderr != nil {
+		return "", fmt.Errorf("couldn't clone content: %w", cmderr)
+	}
+	return dir, nil
+}
+
+func getBenchmarkRootFromProductSpec(rootdir, product string) (string, string, error) {
+	productpath := path.Join(rootdir, product)
 	benchmarkRelative := struct {
 		Path string `yaml:"benchmark_root"`
 	}{}
+
+	prodyamlpath := path.Join(productpath, "product.yml")
 	buf, err := ioutil.ReadFile(prodyamlpath)
+	if err != nil && os.IsNotExist(err) {
+		productpath = path.Join(rootdir, "products", product)
+		prodyamlpath = path.Join(productpath, "product.yml")
+		buf, err = ioutil.ReadFile(prodyamlpath)
+	}
+
+	// Catches either error
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	err = yaml.Unmarshal(buf, &benchmarkRelative)
 	if err != nil {
-		return "", fmt.Errorf("Couldn't parse file %q: %v", prodyamlpath, err)
+		return "", "", fmt.Errorf("Couldn't parse file %q: %v", prodyamlpath, err)
 	}
-	return path.Join(productpath, benchmarkRelative.Path), nil
+	return productpath, path.Join(productpath, benchmarkRelative.Path), nil
 }
 
 func (ctx *e2econtext) assertRootdir(t *testing.T) {
@@ -331,7 +356,7 @@ func (ctx *e2econtext) ensureTestProfileBundle(t *testing.T) {
 	err := backoff.RetryNotify(func() error {
 		found := &cmpv1alpha1.ProfileBundle{}
 		if err := ctx.dynclient.Get(goctx.TODO(), key, found); err != nil {
-			if errors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) {
 				return ctx.dynclient.Create(goctx.TODO(), pb)
 			}
 			return err
@@ -381,7 +406,7 @@ func (ctx *e2econtext) ensureTestSettings(t *testing.T) {
 	err = backoff.RetryNotify(func() error {
 		found := &cmpv1alpha1.ScanSetting{}
 		if err := ctx.dynclient.Get(goctx.TODO(), key, found); err != nil {
-			if errors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) {
 				return ctx.dynclient.Create(goctx.TODO(), autoApplySettings)
 			}
 			return err

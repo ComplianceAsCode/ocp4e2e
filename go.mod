@@ -1,6 +1,6 @@
 module ocp4e2e
 
-go 1.14
+go 1.16
 
 require (
 	github.com/cenkalti/backoff/v3 v3.2.2
