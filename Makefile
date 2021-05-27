@@ -2,7 +2,7 @@ PROFILE?=
 # Defines the product that the test aims to test
 # Since we already have test for RHCOS4, this is the default for now.
 PRODUCT?=rhcos4
-CONTENT_IMAGE?=
+CONTENT_IMAGE?=quay.io/complianceascode/ocp4:latest
 ROOT_DIR?=
 TEST_FLAGS?=-v -timeout 120m
 # Skip pushing the container to your cluster
@@ -19,12 +19,12 @@ e2e: image-to-cluster ## Run the e2e tests. This requires that the PROFILE and P
 
 .PHONY: image-to-cluster
 image-to-cluster: ## Upload a content image to the cluster. The SKIP_CONTAINER_PUSH environment variable skips this step; the CONTENT_IMAGE environment variable takes a pre-uploaded image into use.
-ifdef IMAGE_FORMAT
+ifeq ($(SKIP_CONTAINER_PUSH), true)
+	@echo "Skipping content image upload, will use '$(CONTENT_IMAGE)'"
+else ifdef IMAGE_FORMAT
 	$(eval component = ocp4-content-ds)
 	$(eval CONTENT_IMAGE = $(IMAGE_FORMAT))
 	@echo "IMAGE_FORMAT variable detected. Using image '$(CONTENT_IMAGE)'"
-else ifeq ($(SKIP_CONTAINER_PUSH), true)
-	@echo "Skipping content image upload, will use '$(CONTENT_IMAGE)'"
 else
 	@echo "Building content image"
 	$(ROOT_DIR)/utils/build_ds_container.sh
