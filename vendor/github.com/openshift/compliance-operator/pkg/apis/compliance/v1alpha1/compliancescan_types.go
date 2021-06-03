@@ -155,6 +155,7 @@ type ComplianceScanSettings struct {
 	// resources could be, for instance, CVE feeds. This is useful for disconnected
 	// installations without access to a proxy.
 	NoExternalResources bool `json:"noExternalResources,omitempty"`
+	// It is recommended to set the proxy via the config.openshift.io/Proxy object
 	// Defines a proxy for the scan to get external resources from. This is useful for
 	// disconnected installations with access to a proxy.
 	HTTPSProxy string `json:"httpsProxy,omitempty"`
@@ -248,6 +249,7 @@ type StorageReference struct {
 // that apply to a certain nodeSelector, or the cluster itself.
 // +k8s:openapi-gen=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:path=compliancescans,scope=Namespaced,shortName=scans;scan
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Result",type="string",JSONPath=`.status.result`
 type ComplianceScan struct {
