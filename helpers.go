@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	extscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -36,11 +37,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
-	cached "k8s.io/client-go/discovery/cached"
-	"k8s.io/client-go/kubernetes"
 	cgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/restmapper"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	dynclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -87,7 +85,7 @@ type e2econtext struct {
 	installOperator bool
 	dynclient       dynclient.Client
 	kubecfg         *rest.Config
-	restMapper      *restmapper.DeferredDiscoveryRESTMapper
+	restMapper      meta.RESTMapper
 }
 
 func init() {
@@ -209,12 +207,6 @@ func (ctx *e2econtext) assertKubeClient(t *testing.T) {
 	}
 	ctx.kubecfg = cfg
 
-	// create the kubeclient (temporarily)
-	kubeclient, err := kubernetes.NewForConfig(ctx.kubecfg)
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-
 	// create dynamic client
 	scheme := runtime.NewScheme()
 	if err := cgoscheme.AddToScheme(scheme); err != nil {
@@ -230,11 +222,7 @@ func (ctx *e2econtext) assertKubeClient(t *testing.T) {
 		t.Fatalf("failed to add MachineConfig scheme to runtime scheme: %s", err)
 	}
 
-	cachedDiscoveryClient := cached.NewMemCacheClient(kubeclient.Discovery())
-	ctx.restMapper = restmapper.NewDeferredDiscoveryRESTMapper(cachedDiscoveryClient)
-	ctx.restMapper.Reset()
-
-	ctx.dynclient, err = dynclient.New(ctx.kubecfg, dynclient.Options{Scheme: scheme, Mapper: ctx.restMapper})
+	ctx.dynclient, err = dynclient.New(ctx.kubecfg, dynclient.Options{Scheme: scheme})
 	if err != nil {
 		t.Fatalf("failed to build the dynamic client: %s", err)
 	}
@@ -255,10 +243,6 @@ func (ctx *e2econtext) assertVersion(t *testing.T) {
 		t.Fatalf("E2E-FAILURE: Couldn't get server version from output: %s", rawversion)
 	}
 	ctx.version = string(matches[1])
-}
-
-func (ctx *e2econtext) resetClientMappings() {
-	ctx.restMapper.Reset()
 }
 
 // Makes sure that the namespace where the test will run exists. Doesn't fail

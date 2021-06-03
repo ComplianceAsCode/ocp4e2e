@@ -27,7 +27,6 @@ func TestE2e(t *testing.T) {
 		} else {
 			t.Logf("Skipping operator install as requested")
 		}
-		ctx.resetClientMappings()
 	})
 
 	t.Run("Prereqs setup", func(t *testing.T) {
