@@ -1,4 +1,4 @@
-module ocp4e2e
+module github.com/ComplianceAsCode/ocp4e2e
 
 go 1.16
 
