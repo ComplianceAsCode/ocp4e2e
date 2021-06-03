@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	backoff "github.com/cenkalti/backoff/v3"
+	backoff "github.com/cenkalti/backoff/v4"
 	caolib "github.com/openshift/cluster-authentication-operator/test/library"
 	cmpapis "github.com/openshift/compliance-operator/pkg/apis"
 	cmpv1alpha1 "github.com/openshift/compliance-operator/pkg/apis/compliance/v1alpha1"
@@ -619,7 +619,7 @@ func (ctx *e2econtext) suiteHasRemediationsWithUnmetDependencies(t *testing.T, s
 	if len(remList.Items) > 0 {
 		t.Logf("Remediations from ComplianceSuite: %s", s)
 	} else {
-		t.Log("This suite didn't generate remediations")
+		t.Log("This suite didn't contain remediations with unmet dependencies")
 	}
 	for _, rem := range remList.Items {
 		t.Logf("- %s", rem.Name)

@@ -51,7 +51,7 @@ const (
 	// The check ran, but could not complete properly
 	CheckResultError ComplianceCheckStatus = "ERROR"
 	// The check didn't run because it is not applicable or not selected
-	CheckResultSkipped ComplianceCheckStatus = "SKIP"
+	CheckResultNotApplicable ComplianceCheckStatus = "NOT-APPLICABLE"
 	// The check reports different results from different sources, typically cluster nodes
 	CheckResultInconsistent ComplianceCheckStatus = "INCONSISTENT"
 	// The check didn't yield a usable result
@@ -71,7 +71,7 @@ const (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ComplianceCheckResult represent a result of a single compliance "test"
-// +kubebuilder:resource:path=compliancecheckresults,scope=Namespaced
+// +kubebuilder:resource:path=compliancecheckresults,scope=Namespaced,shortName=ccr;checkresults;checkresult
 // +kubebuilder:printcolumn:name="Status",type="string",JSONPath=`.status`
 // +kubebuilder:printcolumn:name="Severity",type="string",JSONPath=`.severity`
 type ComplianceCheckResult struct {
@@ -89,6 +89,9 @@ type ComplianceCheckResult struct {
 	// How to evaluate if the rule status manually. If no automatic test is present, the rule status will be MANUAL
 	// and the administrator should follow these instructions.
 	Instructions string `json:"instructions,omitempty"`
+	// Any warnings that the user should be aware about.
+	// +nullable
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // IDToDNSFriendlyName gets the ID from the scan and returns a DNS

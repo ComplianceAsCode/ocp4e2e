@@ -3,6 +3,8 @@ package v1alpha1
 import (
 	"reflect"
 
+	conditions "github.com/operator-framework/operator-sdk/pkg/status"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -75,6 +77,9 @@ type ComplianceScanStatusWrapper struct {
 type ComplianceSuiteSettings struct {
 	// Defines whether or not the remediations should be applied automatically
 	AutoApplyRemediations bool `json:"autoApplyRemediations,omitempty"`
+	// Defines whether or not the remediations should be updated automatically.
+	// This is done by deleting the "outdated" object from the remediation.
+	AutoUpdateRemediations bool `json:"autoUpdateRemediations,omitempty"`
 	// Defines a schedule for the scans to run. This is in cronjob format.
 	// Note the scan will still be triggered immediately, and the scheduled
 	// scans will start running only after the initial results are ready.
@@ -94,10 +99,12 @@ type ComplianceSuiteSpec struct {
 // +k8s:openapi-gen=true
 type ComplianceSuiteStatus struct {
 	// +listType=atomic
-	ScanStatuses []ComplianceScanStatusWrapper `json:"scanStatuses"`
+	ScanStatuses []ComplianceScanStatusWrapper `json:"scanStatuses,omitempty"`
 	Phase        ComplianceScanStatusPhase     `json:"phase,omitempty"`
 	Result       ComplianceScanStatusResult    `json:"result,omitempty"`
 	ErrorMessage string                        `json:"errorMessage,omitempty"`
+	// +optional
+	Conditions conditions.Conditions `json:"conditions,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -106,7 +113,7 @@ type ComplianceSuiteStatus struct {
 // cluster. These should help deployers achieve a certain compliance target.
 // +k8s:openapi-gen=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=compliancesuites,scope=Namespaced
+// +kubebuilder:resource:path=compliancesuites,scope=Namespaced,shortName=suites;suite
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Result",type="string",JSONPath=`.status.result`
 type ComplianceSuite struct {
@@ -198,6 +205,13 @@ func (s *ComplianceSuite) ShouldApplyRemediations() bool {
 	return s.ApplyRemediationsAnnotationSet()
 }
 
+func (s *ComplianceSuite) ShouldRemoveOutdated() bool {
+	if s.Spec.AutoUpdateRemediations {
+		return true
+	}
+	return s.RemoveOutdatedAnnotationSet()
+}
+
 func (s *ComplianceSuite) ApplyRemediationsAnnotationSet() bool {
 	annotations := s.GetAnnotations()
 	if annotations == nil {
@@ -207,11 +221,61 @@ func (s *ComplianceSuite) ApplyRemediationsAnnotationSet() bool {
 	return ok
 }
 
-func (s *ComplianceSuite) RemoveOutdated() bool {
+func (s *ComplianceSuite) RemoveOutdatedAnnotationSet() bool {
 	annotations := s.GetAnnotations()
 	if annotations == nil {
 		return false
 	}
 	_, ok := annotations[RemoveOutdatedAnnotation]
 	return ok
+}
+
+func (s *ComplianceSuiteStatus) SetConditionPending() {
+	s.Conditions.SetCondition(conditions.Condition{
+		Type:    "Ready",
+		Status:  corev1.ConditionFalse,
+		Reason:  "Pending",
+		Message: "The compliance suite is waiting to be processed",
+	})
+	s.Conditions.RemoveCondition("Processing")
+}
+
+func (s *ComplianceSuiteStatus) SetConditionInvalid() {
+	s.Conditions.SetCondition(conditions.Condition{
+		Type:    "Ready",
+		Status:  corev1.ConditionFalse,
+		Reason:  "Invalid",
+		Message: "Suite validation failed",
+	})
+	s.Conditions.RemoveCondition("Processing")
+}
+
+func (s *ComplianceSuiteStatus) SetConditionsProcessing() {
+	s.Conditions.SetCondition(conditions.Condition{
+		Type:    "Ready",
+		Status:  corev1.ConditionFalse,
+		Reason:  "Processing",
+		Message: "Compliance suite doesn't have results yet",
+	})
+	s.Conditions.SetCondition(conditions.Condition{
+		Type:    "Processing",
+		Status:  corev1.ConditionTrue,
+		Reason:  "Running",
+		Message: "Compliance suite run is running the scans",
+	})
+}
+
+func (s *ComplianceSuiteStatus) SetConditionReady() {
+	s.Conditions.SetCondition(conditions.Condition{
+		Type:    "Ready",
+		Status:  corev1.ConditionTrue,
+		Reason:  "Done",
+		Message: "Compliance suite run is done and has results",
+	})
+	s.Conditions.SetCondition(conditions.Condition{
+		Type:    "Processing",
+		Status:  corev1.ConditionFalse,
+		Reason:  "NotRunning",
+		Message: "Compliance suite run is done running the scans",
+	})
 }

@@ -28,9 +28,9 @@ type VariableValueSpec struct {
 type TailoredProfileSpec struct {
 	// Points to the name of the profile to extend
 	Extends string `json:"extends"`
-	// Overwrites the title of the extended profile (optional)
+	// Overwrites the title of the extended profile
 	Title string `json:"title,omitempty"`
-	// Overwrites the description of the extended profile (optional)
+	// Overwrites the description of the extended profile
 	Description string `json:"description,omitempty"`
 	// Enables the referenced rules
 	// +optional
@@ -79,7 +79,7 @@ type OutputRef struct {
 
 // TailoredProfile is the Schema for the tailoredprofiles API
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=tailoredprofiles,scope=Namespaced
+// +kubebuilder:resource:path=tailoredprofiles,scope=Namespaced,shortName=tp;tprof
 // +kubebuilder:printcolumn:name="State",type="string",JSONPath=`.status.state`,description="State of the tailored profile"
 type TailoredProfile struct {
 	metav1.TypeMeta   `json:",inline"`
