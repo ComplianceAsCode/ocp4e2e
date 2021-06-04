@@ -5,8 +5,6 @@ PRODUCT?=rhcos4
 CONTENT_IMAGE?=quay.io/complianceascode/ocp4:latest
 ROOT_DIR?=
 TEST_FLAGS?=-v -timeout 120m
-# Skip pushing the container to your cluster
-SKIP_CONTAINER_PUSH?=false
 # Should the test attempt to install the operator?
 INSTALL_OPERATOR?=true
 
@@ -18,18 +16,13 @@ e2e: image-to-cluster ## Run the e2e tests. This requires that the PROFILE and P
 	go test $(TEST_FLAGS) . -profile="$(PROFILE)" -product="$(PRODUCT)" -content-image="$(CONTENT_IMAGE)" -install-operator=$(INSTALL_OPERATOR)
 
 .PHONY: image-to-cluster
-image-to-cluster: ## Upload a content image to the cluster. The SKIP_CONTAINER_PUSH environment variable skips this step; the CONTENT_IMAGE environment variable takes a pre-uploaded image into use.
-ifeq ($(SKIP_CONTAINER_PUSH), true)
-	@echo "Skipping content image upload, will use '$(CONTENT_IMAGE)'"
-else ifdef IMAGE_FORMAT
+image-to-cluster: ## Upload a content image to the cluster. The CONTENT_IMAGE environment variable takes a pre-uploaded image into use.
+ifdef IMAGE_FORMAT
 	$(eval component = ocp4-content-ds)
 	$(eval CONTENT_IMAGE = $(IMAGE_FORMAT))
 	@echo "IMAGE_FORMAT variable detected. Using image '$(CONTENT_IMAGE)'"
 else
-	@echo "Building content image"
-	$(ROOT_DIR)/utils/build_ds_container.sh
-	$(eval CONTENT_IMAGE = image-registry.openshift-image-registry.svc:5000/openshift-compliance/openscap-ocp4-ds:latest)
-	@echo "Content image built and available through: $(CONTENT_IMAGE)"
+	@echo "Skipping content image upload, will use '$(CONTENT_IMAGE)'"
 endif
 
 .PHONY: help
