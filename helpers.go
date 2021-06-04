@@ -407,7 +407,7 @@ func (ctx *e2econtext) ensureTestSettings(t *testing.T) {
 }
 
 func (ctx *e2econtext) ensureIdP(t *testing.T) func() {
-	_, _, cleanups := caolib.AddGitlabIDP(t, ctx.kubecfg)
+	_, _, cleanups := caolib.AddKeycloakIDP(t, ctx.kubecfg)
 	return func() {
 		t.Logf("Cleaning up IdP")
 		caolib.IDPCleanupWrapper(func() {
