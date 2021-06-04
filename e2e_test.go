@@ -2,7 +2,6 @@ package ocp4e2e
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 )
@@ -80,9 +79,6 @@ func TestE2e(t *testing.T) {
 		// empty cleanup function that will be a no-op if the profile setup is skipped.
 		var cleanup func() = func() {}
 		t.Run("Configure test IdP", func(t *testing.T) {
-			if strings.HasPrefix(ctx.Profile, "moderate") {
-				t.Skip("Skipping IdP setup as this doesn't work in this profile.")
-			}
 			cleanup = ctx.ensureIdP(t)
 		})
 
