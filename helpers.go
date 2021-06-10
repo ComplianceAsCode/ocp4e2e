@@ -558,6 +558,10 @@ func (ctx *e2econtext) doRescan(t *testing.T, s string) {
 			t.Fatalf("failed rescan: %s", err)
 		}
 	}
+
+	// FIXME(jaosorior): We wait just in case it takes too long to propagate.
+	time.Sleep(15 * time.Second)
+
 	var lastErr error
 	err = wait.PollImmediate(2*time.Second, 5*time.Minute, func() (bool, error) {
 		suite := &cmpv1alpha1.ComplianceSuite{}
