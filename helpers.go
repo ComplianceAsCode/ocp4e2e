@@ -459,7 +459,7 @@ func (ctx *e2econtext) waitForComplianceSuite(t *testing.T, suiteName string) {
 	// aprox. 15 min
 	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(apiPollInterval), 180)
 
-	err := backoff.Retry(func() error {
+	err := backoff.RetryNotify(func() error {
 		suite := &cmpv1alpha1.ComplianceSuite{}
 		err := ctx.dynclient.Get(goctx.TODO(), key, suite)
 		if err != nil {
@@ -481,10 +481,13 @@ func (ctx *e2econtext) waitForComplianceSuite(t *testing.T, suiteName string) {
 			}
 		}
 		return nil
-	}, bo)
+	}, bo, func(error, time.Duration) {
+		t.Logf("ComplianceSuite %s is still not ready", suiteName)
+	})
 	if err != nil {
 		t.Fatalf("The Compliance Suite '%s' didn't get to DONE phase: %s", key.Name, err)
 	}
+	t.Logf("ComplianceSuite %s is DONE", suiteName)
 }
 
 func (ctx *e2econtext) waitForMachinePoolUpdate(t *testing.T, name string) error {
@@ -538,6 +541,8 @@ func (ctx *e2econtext) doRescan(t *testing.T, s string) {
 	}
 	if len(scanList.Items) == 0 {
 		t.Fatal("This suite didn't contain scans")
+	} else {
+		t.Logf("Running a re-scan on %d scans", len(scanList.Items))
 	}
 	for _, scan := range scanList.Items {
 		updatedScan := scan.DeepCopy()
@@ -557,7 +562,10 @@ func (ctx *e2econtext) doRescan(t *testing.T, s string) {
 		if err != nil {
 			t.Fatalf("failed rescan: %s", err)
 		}
+		t.Logf("Annotated scan %s to retrigger", updatedScan.GetName())
 	}
+
+	t.Logf("Waiting for scans to retrigger")
 	var lastErr error
 	err = wait.PollImmediate(2*time.Second, 5*time.Minute, func() (bool, error) {
 		suite := &cmpv1alpha1.ComplianceSuite{}
@@ -567,6 +575,7 @@ func (ctx *e2econtext) doRescan(t *testing.T, s string) {
 			return false, nil
 		}
 		if suite.Status.Phase == cmpv1alpha1.PhaseDone {
+			t.Logf("Scan still on DONE phase... retrying.")
 			return false, nil
 		}
 		// The scan has been reset, we're good to go
@@ -582,6 +591,7 @@ func (ctx *e2econtext) doRescan(t *testing.T, s string) {
 	if lastErr != nil {
 		t.Fatalf("Error occured while waiting for scan to be reset: %s", lastErr)
 	}
+	t.Logf("All scans retriggered")
 }
 
 func (ctx *e2econtext) getRemediationsForSuite(t *testing.T, s string) int {
