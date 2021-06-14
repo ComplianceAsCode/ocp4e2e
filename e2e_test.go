@@ -62,8 +62,8 @@ func TestE2e(t *testing.T) {
 		numberOfInvalidResults = ctx.getInvalidResultsFromSuite(t, suite)
 	})
 
+	// nolint:nestif
 	if numberOfRemediations > 0 || len(manualRemediations) > 0 {
-
 		if len(manualRemediations) > 0 {
 			t.Run("Apply manual remediations", func(t *testing.T) {
 				ctx.applyManualRemediations(t, manualRemediations)
@@ -77,9 +77,9 @@ func TestE2e(t *testing.T) {
 		})
 
 		// empty cleanup function that will be a no-op if the profile setup is skipped.
-		var cleanup func() = func() {}
+		cleanup := func() {}
 		t.Run("Configure test IdP", func(t *testing.T) {
-			cleanup = ctx.ensureIdP(t)
+			cleanup = ctx.ensureIDP(t)
 		})
 
 		// These will get cleaned up at the end of the test
@@ -144,7 +144,8 @@ func TestE2e(t *testing.T) {
 
 	t.Run("We should have no errors or invalid results", func(t *testing.T) {
 		if numberOfInvalidResults > 0 {
-			t.Errorf("Expected Pass, Fail, Info, or Skip results from platform scans. Got %d Error/None results", numberOfInvalidResults)
+			t.Errorf("Expected Pass, Fail, Info, or Skip results from platform scans."+
+				" Got %d Error/None results", numberOfInvalidResults)
 		}
 	})
 }
