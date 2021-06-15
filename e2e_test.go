@@ -72,8 +72,8 @@ func TestE2e(t *testing.T) {
 		t.Run("Wait for Remediations to apply", func(t *testing.T) {
 			// Lets wait for the MachineConfigs to start applying
 			time.Sleep(30 * time.Second)
-			ctx.waitForMachinePoolUpdate(t, "master")
 			ctx.waitForMachinePoolUpdate(t, "worker")
+			ctx.waitForMachinePoolUpdate(t, "master")
 		})
 
 		// empty cleanup function that will be a no-op if the profile setup is skipped.

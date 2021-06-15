@@ -521,12 +521,12 @@ func (ctx *e2econtext) waitForMachinePoolUpdate(t *testing.T, name string) {
 	})
 	// timeout error
 	if err != nil {
-		t.Errorf("ERROR: Waiting for pool %s timed out", name)
+		t.Errorf("E2E-FAILURE: Waiting for pool %s timed out", name)
 	}
 
 	// An actual error at the end of the run
 	if lastErr != nil {
-		t.Errorf("ERROR: Waiting for pool %s errored: %s", name, lastErr)
+		t.Errorf("E2E-FAILURE: Waiting for pool %s errored: %s", name, lastErr)
 	}
 }
 
