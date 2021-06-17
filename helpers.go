@@ -498,7 +498,7 @@ func (ctx *e2econtext) waitForMachinePoolUpdate(t *testing.T, name string) {
 	mcKey := types.NamespacedName{Name: name}
 
 	var lastErr error
-	err := wait.PollImmediate(10*time.Second, 20*time.Minute, func() (bool, error) {
+	err := wait.PollImmediate(10*time.Second, 30*time.Minute, func() (bool, error) {
 		pool := &mcfgv1.MachineConfigPool{}
 		lastErr = ctx.dynclient.Get(goctx.TODO(), mcKey, pool)
 		if lastErr != nil {
