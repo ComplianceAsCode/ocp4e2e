@@ -454,23 +454,53 @@ func (ctx *e2econtext) getPrefixedProfileName() string {
 }
 
 func (ctx *e2econtext) createBindingForProfile(t *testing.T) string {
+	var useTailoring bool
+	tailoringfilename := fmt.Sprintf("%s-%s.yaml", ctx.product, ctx.Profile)
+	tailoringpath := path.Join(ctx.resourcespath, "tailorings", tailoringfilename)
+	tp, readErr := readObjFromYAMLFilePath(tailoringpath)
+	if readErr != nil {
+		// We use the profile directly if no tailoring exists
+		if errors.Is(readErr, os.ErrNotExist) {
+			useTailoring = false
+		} else {
+			t.Fatalf("failed read tailoring '%s': %s", tailoringpath, readErr)
+		}
+	} else {
+		useTailoring = true
+		createErr := ctx.dynclient.Create(goctx.TODO(), tp)
+		if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			t.Fatalf("failed to create tailoring object from '%s': %s", tailoringpath, createErr)
+		}
+	}
+
 	binding := &cmpv1alpha1.ScanSettingBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      ctx.getPrefixedProfileName(),
 			Namespace: ctx.OperatorNamespacedName.Namespace,
-		},
-		Profiles: []cmpv1alpha1.NamedObjectReference{
-			{
-				APIGroup: "compliance.openshift.io/v1alpha1",
-				Kind:     "Profile",
-				Name:     ctx.getPrefixedProfileName(),
-			},
 		},
 		SettingsRef: &cmpv1alpha1.NamedObjectReference{
 			APIGroup: "compliance.openshift.io/v1alpha1",
 			Kind:     "ScanSetting",
 			Name:     autoApplySettingsName,
 		},
+	}
+
+	if !useTailoring {
+		binding.Profiles = []cmpv1alpha1.NamedObjectReference{
+			{
+				APIGroup: "compliance.openshift.io/v1alpha1",
+				Kind:     "Profile",
+				Name:     ctx.getPrefixedProfileName(),
+			},
+		}
+	} else {
+		binding.Profiles = []cmpv1alpha1.NamedObjectReference{
+			{
+				APIGroup: "compliance.openshift.io/v1alpha1",
+				Kind:     "TailoredProfile",
+				Name:     tp.GetName(),
+			},
+		}
 	}
 
 	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(apiPollInterval), 180)
