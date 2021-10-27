@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	cgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -449,6 +450,31 @@ func (ctx *e2econtext) setIDPNetworkPolicy(t *testing.T) error {
 	return ctx.dynclient.Create(goctx.TODO(), &np)
 }
 
+func (ctx *e2econtext) setPoolRollingPolicy(t *testing.T) error {
+	mcfgpools := &mcfgv1.MachineConfigPoolList{}
+	if err := ctx.dynclient.List(goctx.TODO(), mcfgpools); err != nil {
+		return fmt.Errorf("error get MCP list: %w", err)
+	}
+
+	for i := range mcfgpools.Items {
+		pool := &mcfgpools.Items[i]
+
+		if strings.Contains(pool.Name, "master") {
+			continue
+		}
+
+		if pool.Spec.MaxUnavailable == nil {
+			t.Logf("Setting pool %s Rolling Policy", pool.Name)
+			maxUnavailable := intstr.FromInt(2)
+			pool.Spec.MaxUnavailable = &maxUnavailable
+			if err := ctx.dynclient.Update(goctx.TODO(), pool); err != nil {
+				return fmt.Errorf("error update MCP list MaxUnavailable: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
 func (ctx *e2econtext) getPrefixedProfileName() string {
 	return testProfilebundleName + "-" + ctx.Profile
 }
@@ -526,7 +552,7 @@ func (ctx *e2econtext) waitForMachinePoolUpdate(t *testing.T, name string) {
 	mcKey := types.NamespacedName{Name: name}
 
 	var lastErr error
-	err := wait.PollImmediate(10*time.Second, 30*time.Minute, func() (bool, error) {
+	err := wait.PollImmediate(10*time.Second, 40*time.Minute, func() (bool, error) {
 		pool := &mcfgv1.MachineConfigPool{}
 		lastErr = ctx.dynclient.Get(goctx.TODO(), mcKey, pool)
 		if lastErr != nil {
