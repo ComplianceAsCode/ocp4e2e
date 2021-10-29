@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ComplianceAsCode/ocp4e2e/resultparser"
 	backoff "github.com/cenkalti/backoff/v4"
 	caolib "github.com/openshift/cluster-authentication-operator/test/library"
 	cmpapis "github.com/openshift/compliance-operator/pkg/apis"
@@ -949,10 +950,14 @@ func matchFoundResultToExpectation(
 			if !ok {
 				return false, fmt.Errorf("couldn't parse the result as string or map of strings")
 			}
+			p, perr := resultparser.ParseRoleResultEval(roleResult)
+			if perr != nil {
+				return false, fmt.Errorf("Error parsing result evaluator: %w", perr)
+			}
 			// NOTE(jaosorior): Normally, the results will have a reference
 			// to the role they apply to in the name. This is hacky...
 			if strings.Contains(foundResult.GetLabels()[cmpv1alpha1.ComplianceScanLabel], role) {
-				return strings.EqualFold(string(foundResult.Status), roleResult), nil
+				return p.Eval(string(foundResult.Status)), nil
 			}
 		}
 		return false, fmt.Errorf("the role specified in the test doesn't match an existing role")
