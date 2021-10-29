@@ -31,6 +31,7 @@ func TestE2e(t *testing.T) {
 	t.Run("Prereqs setup", func(t *testing.T) {
 		ctx.ensureTestProfileBundle(t)
 		ctx.ensureTestSettings(t)
+		ctx.setPoolRollingPolicy(t)
 	})
 
 	// Remediations
