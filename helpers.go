@@ -937,7 +937,11 @@ func matchFoundResultToExpectation(
 ) (bool, error) {
 	// Handle expected result for all roles
 	if resultStr, ok := expectedResult.(string); ok {
-		return strings.EqualFold(string(foundResult.Status), resultStr), nil
+		p, perr := resultparser.ParseRoleResultEval(resultStr)
+		if perr != nil {
+			return false, fmt.Errorf("Error parsing result evaluator: %w", perr)
+		}
+		return p.Eval(string(foundResult.Status)), nil
 	}
 	// Handle role-specific result
 	if resultMap, ok := expectedResult.(map[interface{}]interface{}); ok {
