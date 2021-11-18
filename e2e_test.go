@@ -83,8 +83,18 @@ func TestE2e(t *testing.T) {
 			cleanup = ctx.ensureIDP(t)
 		})
 
+		optionalCleanup := func() {
+			// Only clean up IdP if the test hasn't failed.
+			// This will help us debug IdP issues.
+			if !t.Failed() {
+				t.Log("Cleaning up IdP")
+				cleanup()
+			} else {
+				t.Log("Skipping IdP cleanup")
+			}
+		}
 		// These will get cleaned up at the end of the test
-		defer cleanup()
+		defer optionalCleanup()
 		var scanN int
 
 		for scanN = 2; scanN < 5; scanN++ {
