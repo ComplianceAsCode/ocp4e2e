@@ -65,17 +65,25 @@ func TestE2e(t *testing.T) {
 
 	// nolint:nestif
 	if numberOfRemediations > 0 || len(manualRemediations) > 0 {
-		if len(manualRemediations) > 0 {
-			t.Run("Apply manual remediations", func(t *testing.T) {
-				ctx.applyManualRemediations(t, manualRemediations)
-			})
-		}
+
 		t.Run("Wait for Remediations to apply", func(t *testing.T) {
 			// Lets wait for the MachineConfigs to start applying
 			time.Sleep(30 * time.Second)
 			ctx.waitForMachinePoolUpdate(t, "worker")
 			ctx.waitForMachinePoolUpdate(t, "master")
 		})
+
+		if len(manualRemediations) > 0 {
+			t.Run("Apply manual remediations", func(t *testing.T) {
+				ctx.applyManualRemediations(t, manualRemediations)
+			})
+			t.Run("Wait for manual Remediations to apply", func(t *testing.T) {
+				// Lets wait for the MachineConfigs to start applying
+				time.Sleep(30 * time.Second)
+				ctx.waitForMachinePoolUpdate(t, "worker")
+				ctx.waitForMachinePoolUpdate(t, "master")
+			})
+		}
 
 		// empty cleanup function that will be a no-op if the profile setup is skipped.
 		cleanup := func() {}
