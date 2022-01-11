@@ -74,6 +74,8 @@ func TestE2e(t *testing.T) {
 		})
 
 		if len(manualRemediations) > 0 {
+			// Wait some time after MachineConfigPool is ready to apply manual remediation
+			time.Sleep(60 * time.Second)
 			t.Run("Apply manual remediations", func(t *testing.T) {
 				ctx.applyManualRemediations(t, manualRemediations)
 			})
@@ -85,24 +87,10 @@ func TestE2e(t *testing.T) {
 			})
 		}
 
-		// empty cleanup function that will be a no-op if the profile setup is skipped.
-		cleanup := func() {}
 		t.Run("Configure test IdP", func(t *testing.T) {
-			cleanup = ctx.ensureIDP(t)
+			ctx.ensureIDP(t)
 		})
 
-		optionalCleanup := func() {
-			// Only clean up IdP if the test hasn't failed.
-			// This will help us debug IdP issues.
-			if !t.Failed() {
-				t.Log("Cleaning up IdP")
-				cleanup()
-			} else {
-				t.Log("Skipping IdP cleanup")
-			}
-		}
-		// These will get cleaned up at the end of the test
-		defer optionalCleanup()
 		var scanN int
 
 		for scanN = 2; scanN < 5; scanN++ {
