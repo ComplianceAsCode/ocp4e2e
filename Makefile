@@ -16,7 +16,10 @@ all: e2e
 
 .PHONY: e2e
 e2e: ## Run the e2e tests. This requires that the PROFILE and PRODUCT environment variables be set.
+## idp_fix.patch is used to fix route destination cert for keycloak IdP deployment
+	git apply idp_fix.patch
 	go test $(TEST_FLAGS) . -profile="$(PROFILE)" -product="$(PRODUCT)" -content-image="$(CONTENT_IMAGE)" -install-operator=$(INSTALL_OPERATOR)
+	git apply -R idp_fix.patch
 
 .PHONY: help
 help: ## Show this help screen
