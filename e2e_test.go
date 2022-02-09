@@ -87,10 +87,6 @@ func TestE2e(t *testing.T) {
 			})
 		}
 
-		t.Run("Configure test IdP", func(t *testing.T) {
-			ctx.ensureIDP(t)
-		})
-
 		var scanN int
 
 		for scanN = 2; scanN < 5; scanN++ {
