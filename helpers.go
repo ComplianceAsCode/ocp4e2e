@@ -58,6 +58,7 @@ const (
 type RuleTest struct {
 	DefaultResult          interface{} `yaml:"default_result"`
 	ResultAfterRemediation interface{} `yaml:"result_after_remediation,omitempty"`
+	ExcludeFromCount       interface{} `yaml:"exclude_from_count,omitempty"`
 }
 
 var (
@@ -786,6 +787,7 @@ func (ctx *e2econtext) getInvalidResultsFromSuite(t *testing.T, s string) int {
 func (ctx *e2econtext) verifyCheckResultsForSuite(
 	t *testing.T, s string, afterRemediations bool,
 ) (nresults int, manualRems []string) {
+	excludeList := make(map[string]int)
 	manualRemediationSet := map[string]bool{}
 	resList := &cmpv1alpha1.ComplianceCheckResultList{}
 	matchLabels := dynclient.MatchingLabels{
@@ -803,7 +805,11 @@ func (ctx *e2econtext) verifyCheckResultsForSuite(
 	for idx := range resList.Items {
 		check := &resList.Items[idx]
 		t.Logf("Result - Name: %s - Status: %s - Severity: %s", check.Name, check.Status, check.Severity)
-		manualRem, err := ctx.verifyRule(t, check, afterRemediations)
+		manualRem, exclude, err := ctx.verifyRule(t, check, afterRemediations)
+		if exclude {
+			excludeList[check.Name] = 1
+			t.Logf("Excluded Rule from counting - Name: %s", check.Name)
+		}
 		if err != nil {
 			t.Error(err)
 		}
@@ -817,20 +823,20 @@ func (ctx *e2econtext) verifyCheckResultsForSuite(
 		manualRemediations = append(manualRemediations, key)
 	}
 
-	return len(resList.Items), manualRemediations
+	return len(resList.Items) - len(excludeList), manualRemediations
 }
 
 func (ctx *e2econtext) verifyRule(
 	t *testing.T, result *cmpv1alpha1.ComplianceCheckResult, afterRemediations bool,
-) (string, error) {
+) (string, bool, error) {
 	ruleName, err := ctx.getRuleFolderNameFromResult(result)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	// nolint:gosec
 	rulePathBytes, err := exec.Command("find", ctx.benchmarkRoot, "-name", ruleName).Output()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	rulePath := strings.Trim(string(rulePathBytes), "\n")
 
@@ -838,14 +844,14 @@ func (ctx *e2econtext) verifyRule(
 	if err != nil {
 		if os.IsNotExist(err) {
 			// There's no test file, so no need to verify
-			return "", nil
+			return "", false, err
 		}
-		return "", err
+		return "", false, err
 	}
 
 	test := RuleTest{}
 	if err := yaml.Unmarshal(buf, &test); err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	remPath := ctx.getManualRemediationPath(rulePath)
@@ -854,25 +860,25 @@ func (ctx *e2econtext) verifyRule(
 	// nolint:nestif
 	if !afterRemediations {
 		if err := verifyRuleResult(result, test.DefaultResult, test, ruleName); err != nil {
-			return remPath, err
+			return remPath, isExcluded(test.ExcludeFromCount), err
 		}
 	} else {
 		// after remediations
 		// If we expect a change after remediation is applied, let's test for it
 		if test.ResultAfterRemediation != nil {
 			if err := verifyRuleResult(result, test.ResultAfterRemediation, test, ruleName); err != nil {
-				return remPath, err
+				return remPath, isExcluded(test.ExcludeFromCount), err
 			}
 		} else {
 			// Check that the default didn't change
 			if err := verifyRuleResult(result, test.DefaultResult, test, ruleName); err != nil {
-				return remPath, err
+				return remPath, isExcluded(test.ExcludeFromCount), err
 			}
 		}
 	}
 
 	t.Logf("Rule %s matched expected result", ruleName)
-	return remPath, nil
+	return remPath, isExcluded(test.ExcludeFromCount), err
 }
 
 // getTestDefinition attempts to use a versioned test (<version>.yml)
@@ -930,6 +936,16 @@ func verifyRuleResult(
 			ruleName, expectedResult, foundResult.Status)
 	}
 	return nil
+}
+
+// Will exclude the rule from counting if excludedString has values
+func isExcluded(exclude interface{}) bool {
+	if excludedString, ok := exclude.(string); ok {
+		if excludedString != "FALSE" {
+			return true
+		}
+	}
+	return false
 }
 
 func matchFoundResultToExpectation(
