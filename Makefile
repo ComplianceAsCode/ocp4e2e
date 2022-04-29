@@ -2,7 +2,7 @@ PROFILE?=
 # Defines the product that the test aims to test
 # Since we already have test for RHCOS4, this is the default for now.
 PRODUCT?=rhcos4
-CONTENT_IMAGE?=quay.io/complianceascode/ocp4:latest
+CONTENT_IMAGE?=quay.io/compliance-operator/compliance-operator-content:latest
 ROOT_DIR?=
 TEST_FLAGS?=-v -timeout 120m
 # Should the test attempt to install the operator?
