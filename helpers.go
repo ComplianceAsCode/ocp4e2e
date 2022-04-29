@@ -844,7 +844,7 @@ func (ctx *e2econtext) verifyRule(
 	if err != nil {
 		if os.IsNotExist(err) {
 			// There's no test file, so no need to verify
-			return "", false, err
+			return "", false, nil
 		}
 		return "", false, err
 	}
