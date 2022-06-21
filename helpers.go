@@ -884,7 +884,14 @@ func (ctx *e2econtext) verifyRule(
 
 // getTestDefinition attempts to use a versioned test (<version>.yml)
 // definition, if it fails it'll try to use the standard test
-// definition (e2e.yml).
+// definition (e2e.yml). If that does not exist either, the function checks
+// if other files (presumably versioned tests) exist in that file and if
+// they do, it would fail. This is better than just silently ignoring the
+// files because:
+//  1) we catch rules that have versioned results but no result for the
+//	   current version more easily
+//  2) with each version, this forces us to think if we can already retire
+//     certain rules
 func (ctx *e2econtext) getTestDefinition(rulePath string) ([]byte, error) {
 	versionedManifest := fmt.Sprintf("%s.yml", ctx.version)
 	versionedRuleTestFilePath := path.Join(ruleTestDir, versionedManifest)
@@ -898,8 +905,23 @@ func (ctx *e2econtext) getTestDefinition(rulePath string) ([]byte, error) {
 		return nil, verr
 	}
 
+	// the error is now os.IsNotExist, let's try the global file
 	testFilePath := path.Join(rulePath, ruleTestFilePath)
-	return ioutil.ReadFile(testFilePath)
+	gbuf, gerr := ioutil.ReadFile(testFilePath)
+	if os.IsNotExist(gerr) {
+		// let's check for other files and fail if they don't exist
+		files, err := os.ReadDir(ruleTestDir)
+		if err != nil {
+			return nil, err
+		}
+		if len(files) > 0 {
+			return nil, fmt.Errorf("E2E-FAILURE: the rule directory %s contains versioned files, but none for %s", ruleTestDir, ctx.version)
+		}
+	} else if gerr != nil {
+		return nil, gerr
+	}
+
+	return gbuf, nil
 }
 
 // getManualRemediationPath attempts to get a versioned remediation
