@@ -394,6 +394,7 @@ func (ctx *e2econtext) ensureTestSettings(t *testing.T) {
 	}
 	autoApplySettings.AutoApplyRemediations = true
 	autoApplySettings.Debug = true
+	autoApplySettings.ShowNotApplicable = true // so that we can test if a setting goes from PASS/FAIL to N/A
 	err = backoff.RetryNotify(func() error {
 		found := &cmpv1alpha1.ScanSetting{}
 		if err := ctx.dynclient.Get(goctx.TODO(), key, found); err != nil {
