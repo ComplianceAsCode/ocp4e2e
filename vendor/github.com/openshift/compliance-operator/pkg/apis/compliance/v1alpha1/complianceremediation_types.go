@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -18,9 +20,22 @@ const (
 	RemediationOutdated            RemediationApplicationState = "Outdated"
 	RemediationError               RemediationApplicationState = "Error"
 	RemediationMissingDependencies RemediationApplicationState = "MissingDependencies"
+	RemediationNeedsReview         RemediationApplicationState = "NeedsReview"
 )
 
+// +kubebuilder:validation:Enum=Configuration;Enforcement
 type RemediationType string
+
+const (
+	ConfigurationRemediation RemediationType = "Configuration"
+	EnforcementRemediation   RemediationType = "Enforcement"
+)
+
+const (
+	RemediationEnforcementEmpty string = ""
+	RemediationEnforcementOff   string = "off"
+	RemediationEnforcementAll   string = "all"
+)
 
 const (
 	// The key of a ComplianceCheckResult that dependency annotations point to
@@ -28,17 +43,73 @@ const (
 )
 
 const (
-	// OutdatedRemediationLabel specifies that the remediation has been superseded by a newer version
-	OutdatedRemediationLabel               = "complianceoperator.openshift.io/outdated-remediation"
-	RemediationHasUnmetDependenciesLabel   = "compliance.openshift.io/has-unmet-dependencies"
+	// OutdatedRemediationLabel specifies that the remediation has been superseded by a newer version.
+	OutdatedRemediationLabel = "complianceoperator.openshift.io/outdated-remediation"
+	// RemediationHasUnmetDependenciesLabel specifies that a remediation has unmet dependencies
+	// and thus cannot be applied.
+	RemediationHasUnmetDependenciesLabel = "compliance.openshift.io/has-unmet-dependencies"
+	// RemediationUnsetValueLabel specifies that a remediation requires a value
+	// to be set.
+	RemediationUnsetValueLabel = "compliance.openshift.io/has-unset-variable"
+	// RemediationValueRequiredProcessedLabel specifies that a remediation's needed value
+	// has been processed.
+	RemediationValueRequiredProcessedLabel = "compliance.openshift.io/value-required-processed"
+	// RemediationCreatedByOperatorAnnotation specifies that a remediation was
+	// created by the Compliance Operator; this is used for the Compliance Operator to
+	// know whether it can delete the object or not when un-applying a remediation.
 	RemediationCreatedByOperatorAnnotation = "compliance.openshift.io/remediation"
-	RemediationDependencyAnnotation        = "compliance.openshift.io/depends-on"
-	RemediationDependenciesMetAnnotation   = "compliance.openshift.io/dependencies-met"
+	// RemediationDependencyAnnotation specifies that a remediation depends on
+	// an XCCDF rule passing in order to be applied.
+	RemediationDependencyAnnotation = "compliance.openshift.io/depends-on"
+	// RemediationObjectDependencyAnnotation specifies that a remediation depends on
+	// another Kubernetes object existing in order to be applied.
+	RemediationObjectDependencyAnnotation = "compliance.openshift.io/depends-on-obj"
+	// RemediationDependenciesMetAnnotation specifies that a remediation's dependencies
+	// have been met.
+	RemediationDependenciesMetAnnotation = "compliance.openshift.io/dependencies-met"
+	// RemediationOptionalAnnotation specifies that a remediation is optional,
+	// and thus failures applying it are to be ignored.
+	RemediationOptionalAnnotation = "compliance.openshift.io/optional"
+	// RemediationEnforcementTypeAnnotation specifies that a remediation is
+	// of a certain policy enforcement type. This generally marks the engine
+	// that the policy will be evaluated with. e.g. gatekeeper
+	RemediationEnforcementTypeAnnotation = "compliance.openshift.io/enforcement-type"
+	// RemediationValueRequiredAnnotation specifies that a remediation requires
+	// a value to be set before being applied.
+	RemediationValueRequiredAnnotation = "compliance.openshift.io/value-required"
+	// RemediationUnsetValueAnnotation specifies the unset value that's missing
+	// for the remediation
+	RemediationUnsetValueAnnotation = "compliance.openshift.io/unset-value"
+	// RemediationValueUsedAnnotation specifies the values used for a remediation
+	RemediationValueUsedAnnotation = "compliance.openshift.io/xccdf-value-used"
+	// OCPVersionDependencyAnnotation specifies that the OCP cluster needs to fall
+	// into a range in order to be applied
+	OCPVersionDependencyAnnotation = "compliance.openshift.io/ocp-version"
+	// K8SVersionDependencyAnnotation specifies that the k8s cluster needs to fall
+	// into a range in order to be applied
+	K8SVersionDependencyAnnotation = "compliance.openshift.io/k8s-version"
 )
+
+var (
+	KubeDepsNotFound = errors.New("kubernetes dependency annotation not found")
+)
+
+type RemediationObjectDependencyReference struct {
+	metav1.TypeMeta `json:",inline"`
+	Name            string `json:"name"`
+	Namespace       string `json:"namespace,omitempty"`
+}
 
 type ComplianceRemediationSpecMeta struct {
 	// Whether the remediation should be picked up and applied by the operator
 	Apply bool `json:"apply"`
+	// The type of remediation that this object applies. The available
+	// types are: Configuration and Enforcement. Where the Configuration
+	// type fixes a configuration to match a compliance expectation.
+	// The Enforcement type, on the other hand, ensures that the cluster
+	// stays in compliance via means of authorization.
+	// +kubebuilder:default="Configuration"
+	Type RemediationType `json:"type,omitempty"`
 }
 
 type ComplianceRemediationPayload struct {
@@ -142,12 +213,75 @@ func (r *ComplianceRemediation) IsApplied() bool {
 
 func (r *ComplianceRemediation) HasUnmetDependencies() bool {
 	a := r.GetAnnotations()
-	if a == nil {
+	if len(a) == 0 {
 		return false
 	}
 	_, hasDependencies := a[RemediationDependencyAnnotation]
+	_, hasObjDependencies := a[RemediationObjectDependencyAnnotation]
 	_, dependenciesMet := a[RemediationDependenciesMetAnnotation]
-	return hasDependencies && !dependenciesMet
+	return (hasDependencies || hasObjDependencies) && !dependenciesMet
+}
+
+func (r *ComplianceRemediation) HasAnnotation(ann string) bool {
+
+	a := r.GetAnnotations()
+	if len(a) == 0 {
+		return false
+	}
+	_, hasAnnotation := a[ann]
+	return hasAnnotation
+
+}
+
+func (r *ComplianceRemediation) HasLabel(label string) bool {
+
+	a := r.GetLabels()
+	if len(a) == 0 {
+		return false
+	}
+	_, hasLabel := a[label]
+	return hasLabel
+
+}
+
+func (r *ComplianceRemediation) HasUnmetKubeDependencies() bool {
+	a := r.GetAnnotations()
+	if len(a) == 0 {
+		return false
+	}
+	_, hasObjDependencies := a[RemediationObjectDependencyAnnotation]
+	_, dependenciesMet := a[RemediationDependenciesMetAnnotation]
+	return hasObjDependencies && !dependenciesMet
+}
+
+func (r *ComplianceRemediation) GetEnforcementType() string {
+	a := r.GetAnnotations()
+	if len(a) == 0 {
+		return "unknown"
+	}
+	etype, hasAnnotation := a[RemediationEnforcementTypeAnnotation]
+	if !hasAnnotation {
+		return "unknown"
+	}
+	return etype
+}
+
+func (r *ComplianceRemediation) ParseRemediationDependencyRefs() ([]RemediationObjectDependencyReference, error) {
+	annotations := r.GetAnnotations()
+	rawdeps, hasDeps := annotations[RemediationObjectDependencyAnnotation]
+	if !hasDeps {
+		return nil, KubeDepsNotFound
+	}
+
+	deps := []RemediationObjectDependencyReference{}
+
+	if rawdeps == "" {
+		return deps, nil
+	}
+	if parseErr := json.Unmarshal([]byte(rawdeps), &deps); parseErr != nil {
+		return nil, fmt.Errorf("couldn't parse kube object dependencies: %w", parseErr)
+	}
+	return deps, nil
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

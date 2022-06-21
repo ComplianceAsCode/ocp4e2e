@@ -142,6 +142,16 @@ type RawResultStorageSettings struct {
 	// The persistent volume will hold the raw results of the scan.
 	// +kubebuilder:default={"ReadWriteOnce"}
 	PVAccessModes []corev1.PersistentVolumeAccessMode `json:"pvAccessModes,omitempty"`
+	// By setting this, it's possible to configure where the result server instances
+	// are run. These instances will mount a Persistent Volume to store the raw
+	// results, so special care should be taken to schedule these in trusted nodes.
+	// +kubebuilder:default={"node-role.kubernetes.io/master": ""}
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// Specifies tolerations needed for the result server to run on the nodes. This is useful
+	// in case the target set of nodes have custom taints that don't allow certain
+	// workloads to run. Defaults to allowing scheduling on master nodes.
+	// +kubebuilder:default={{key: "node-role.kubernetes.io/master", operator: "Exists", effect: "NoSchedule"}}
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }
 
 // ComplianceScanSettings groups together settings of a ComplianceScan
@@ -161,9 +171,30 @@ type ComplianceScanSettings struct {
 	HTTPSProxy string `json:"httpsProxy,omitempty"`
 	// Specifies tolerations needed for the scan to run on the nodes. This is useful
 	// in case the target set of nodes have custom taints that don't allow certain
-	// workloads to run. Defaults to allowing scheduling on the master nodes.
-	// +kubebuilder:default={{key: "node-role.kubernetes.io/master", operator: "Exists", effect: "NoSchedule"}}
+	// workloads to run. Defaults to allowing scheduling on all nodes.
+	// +kubebuilder:default={{operator: "Exists"}}
 	ScanTolerations []corev1.Toleration `json:"scanTolerations,omitempty"`
+
+	// Defines whether the scan should proceed if we're not able to
+	// scan all the nodes or not. `true` means that the operator
+	// should be strict and error out. `false` means that we don't
+	// need to be strict and we can proceed.
+	// +kubebuilder:default=true
+	StrictNodeScan *bool `json:"strictNodeScan,omitempty"`
+
+	// Specifies what to do with remediations of Enforcement type. If left empty,
+	// this defaults to "off" which doesn't create nor apply any enforcement remediations.
+	// If set to "all" this creates any enforcement remediations it encounters.
+	// Subsequently, this can also be set to a specific type. e.g. setting it to
+	// "gatekeeper" will apply any enforcement remediations relevant to the
+	// Gatekeeper OPA system.
+	// These objects will annotated in the content itself with:
+	//     complianceascode.io/enforcement-type: <type>
+	RemediationEnforcement string `json:"remediationEnforcement,omitempty"`
+
+	// Determines whether to hide or show results that are not applicable.
+	// +kubebuilder:default=false
+	ShowNotApplicable bool `json:"showNotApplicable,omitempty"`
 }
 
 // ComplianceScanSpec defines the desired state of ComplianceScan
@@ -296,6 +327,27 @@ func (cs *ComplianceScan) GetScanType() ComplianceScanType {
 		panic(err)
 	}
 	return scantype
+}
+
+// Returns whether remediation enforcement is off or not
+func (cs *ComplianceScan) RemediationEnforcementIsOff() bool {
+	return (strings.EqualFold(cs.Spec.RemediationEnforcement, RemediationEnforcementEmpty) ||
+		strings.EqualFold(cs.Spec.RemediationEnforcement, RemediationEnforcementOff))
+}
+
+// Returns whether remediation enforcement is off or not
+func (cs *ComplianceScan) RemediationEnforcementTypeMatches(etype string) bool {
+	return (strings.EqualFold(cs.Spec.RemediationEnforcement, RemediationEnforcementAll) ||
+		strings.EqualFold(cs.Spec.RemediationEnforcement, etype))
+}
+
+// GetScanType get's the scan type for a scan
+func (cs *ComplianceScan) IsStrictNodeScan() bool {
+	// strictNodeScan should be true by default
+	if cs.Spec.StrictNodeScan == nil {
+		return true
+	}
+	return *cs.Spec.StrictNodeScan
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
