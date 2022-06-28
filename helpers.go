@@ -894,7 +894,7 @@ func (ctx *e2econtext) verifyRule(
 //     certain rules
 func (ctx *e2econtext) getTestDefinition(rulePath string) ([]byte, error) {
 	versionedManifest := fmt.Sprintf("%s.yml", ctx.version)
-	versionedRuleTestFilePath := path.Join(ruleTestDir, versionedManifest)
+	versionedRuleTestFilePath := path.Join(rulePath, ruleTestDir, versionedManifest)
 	vbuf, verr := ioutil.ReadFile(versionedRuleTestFilePath)
 
 	if verr == nil {
