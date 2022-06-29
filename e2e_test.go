@@ -127,7 +127,7 @@ func TestE2e(t *testing.T) {
 				t.Errorf("The amount of check results are NOT the same: init -> %d  end %d",
 					numberOfCheckResultsInit, numberOfCheckResultsEnd)
 			} else {
-				t.Logf("There amount of check results are the same: init -> %d  end %d",
+				t.Logf("The amount of check results are the same: init -> %d  end %d",
 					numberOfCheckResultsInit, numberOfCheckResultsEnd)
 			}
 		})
