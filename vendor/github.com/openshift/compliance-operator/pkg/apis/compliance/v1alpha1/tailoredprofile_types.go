@@ -20,18 +20,21 @@ type VariableValueSpec struct {
 	Name string `json:"name"`
 	// Rationale of why this value is being tailored
 	Rationale string `json:"rationale"`
-	// Rationale of why this value is being tailored
+	// Value of the variable being set
 	Value string `json:"value"`
 }
 
 // TailoredProfileSpec defines the desired state of TailoredProfile
 type TailoredProfileSpec struct {
+	// +optional
 	// Points to the name of the profile to extend
-	Extends string `json:"extends"`
-	// Overwrites the title of the extended profile
-	Title string `json:"title,omitempty"`
-	// Overwrites the description of the extended profile
-	Description string `json:"description,omitempty"`
+	Extends string `json:"extends,omitempty"`
+	// Title for the tailored profile. It can't be empty.
+	// +kubebuilder:validation:Pattern=^.+$
+	Title string `json:"title"`
+	// Description of tailored profile. It can't be empty.
+	// +kubebuilder:validation:Pattern=^.+$
+	Description string `json:"description"`
 	// Enables the referenced rules
 	// +optional
 	// +nullable
@@ -66,7 +69,7 @@ type TailoredProfileStatus struct {
 	OutputRef OutputRef `json:"outputRef,omitempty"`
 	// The current state of the tailored profile
 	State        TailoredProfileState `json:"state,omitempty"`
-	ErrorMessage string               `json:"errorMessagae,omitempty"`
+	ErrorMessage string               `json:"errorMessage,omitempty"`
 }
 
 // OutputRef is a reference to the object created from the tailored profile
