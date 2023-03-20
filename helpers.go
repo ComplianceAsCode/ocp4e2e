@@ -62,11 +62,10 @@ type RuleTest struct {
 }
 
 var (
-	product           string
-	profile           string
-	contentImage      string
-	installOperator   bool
-	installFromMaster bool
+	product         string
+	profile         string
+	contentImage    string
+	installOperator bool
 )
 
 var (
@@ -81,17 +80,15 @@ type e2econtext struct {
 	ContentImage           string
 	OperatorNamespacedName types.NamespacedName
 	// These are only needed for the test and will only be used in this package
-	rootdir           string
-	corootdir         string
-	profilepath       string
-	product           string
-	resourcespath     string
-	benchmarkRoot     string
-	version           string
-	installOperator   bool
-	installFromMaster bool
-	dynclient         dynclient.Client
-	kubecfg           *rest.Config
+	rootdir         string
+	profilepath     string
+	product         string
+	resourcespath   string
+	benchmarkRoot   string
+	version         string
+	installOperator bool
+	dynclient       dynclient.Client
+	kubecfg         *rest.Config
 }
 
 func init() {
@@ -100,12 +97,10 @@ func init() {
 	flag.StringVar(&contentImage, "content-image", "", "The path to the image with the content to test")
 	flag.BoolVar(&installOperator, "install-operator", true, "Should the test-code install the operator or not? "+
 		"This is useful if you need to test with your own deployment of the operator")
-	flag.BoolVar(&installFromMaster, "install-from-master", true, "Should the test-code install the operator from master branch? ")
 }
 
 func newE2EContext(t *testing.T) *e2econtext {
 	rootdir := os.Getenv("ROOT_DIR")
-	corootdir := os.Getenv("CO_ROOT_DIR")
 	if rootdir == "" {
 		var cloneErr error
 		rootdir, cloneErr = cloneContentDir()
@@ -113,15 +108,6 @@ func newE2EContext(t *testing.T) *e2econtext {
 			t.Fatalf("Unable to clone content dir: %s", cloneErr)
 		}
 		os.Setenv("ROOT_DIR", rootdir)
-	}
-
-	if corootdir == "" {
-		var cloneErr error
-		corootdir, cloneErr = cloneCODir()
-		if cloneErr != nil {
-			t.Fatalf("Unable to clone CO dir: %s", cloneErr)
-		}
-		os.Setenv("CO_ROOT_DIR", corootdir)
 	}
 
 	profilefile := fmt.Sprintf("%s.profile", profile)
@@ -137,13 +123,11 @@ func newE2EContext(t *testing.T) *e2econtext {
 		ContentImage:           contentImage,
 		OperatorNamespacedName: types.NamespacedName{Name: "compliance-operator"},
 		rootdir:                rootdir,
-		corootdir:              corootdir,
 		profilepath:            profilepath,
 		resourcespath:          resourcespath,
 		benchmarkRoot:          benchmarkRoot,
 		product:                product,
 		installOperator:        installOperator,
-		installFromMaster:      installFromMaster,
 	}
 }
 
@@ -154,19 +138,6 @@ func cloneContentDir() (string, error) {
 	}
 	_, cmderr := exec.Command("/usr/bin/git", "clone",
 		"https://github.com/ComplianceAsCode/content.git", dir).CombinedOutput()
-	if cmderr != nil {
-		return "", fmt.Errorf("couldn't clone content: %w", cmderr)
-	}
-	return dir, nil
-}
-
-func cloneCODir() (string, error) {
-	dir, tmperr := ioutil.TempDir("", "co-*")
-	if tmperr != nil {
-		return "", fmt.Errorf("couldn't create tmpdir: %w", tmperr)
-	}
-	_, cmderr := exec.Command("/usr/bin/git", "clone",
-		"https://github.com/ComplianceAsCode/compliance-operator", dir).CombinedOutput()
 	if cmderr != nil {
 		return "", fmt.Errorf("couldn't clone content: %w", cmderr)
 	}
@@ -210,20 +181,6 @@ func (ctx *e2econtext) assertRootdir(t *testing.T) {
 	}
 	if !dirinfo.IsDir() {
 		t.Fatal("$ROOT_DIR must be a directory")
-	}
-}
-
-func (ctx *e2econtext) assertCORootDir(t *testing.T) {
-	t.Helper()
-	dirinfo, err := os.Stat(ctx.corootdir)
-	if os.IsNotExist(err) {
-		t.Fatal("$CO_ROOT_DIR points to an unexistent directory")
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !dirinfo.IsDir() {
-		t.Fatal("$CO_ROOT_DIR must be a directory")
 	}
 }
 
@@ -305,18 +262,6 @@ func (ctx *e2econtext) ensureNamespaceExistsAndSet(t *testing.T) {
 	// but we can instead change the namespace depending on the resource
 	// file
 	ctx.OperatorNamespacedName.Namespace = obj.GetName()
-}
-
-func (ctx *e2econtext) ensureDeployFromMaster(t *testing.T) {
-	// we are going to run deploy-local make target to deploy the operator
-	// from the master branch in corootdir
-	cmd := exec.Command("make", "deploy-local")
-	cmd.Dir = ctx.corootdir
-	result, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("E2E-FAILURE: failed to deploy operator from master: %s", err)
-	}
-	t.Logf("E2E-INFO: %s", result)
 }
 
 func (ctx *e2econtext) ensureCatalogSourceExists(t *testing.T) {
