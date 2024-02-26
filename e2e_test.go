@@ -27,6 +27,9 @@ func TestE2e(t *testing.T) {
 			t.Logf("Skipping operator install as requested")
 		}
 	})
+	if t.Failed() {
+		return
+	}
 
 	t.Run("Prereqs setup", func(t *testing.T) {
 		ctx.ensureTestProfileBundle(t)
