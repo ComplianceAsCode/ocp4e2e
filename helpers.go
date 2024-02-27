@@ -310,7 +310,7 @@ func (ctx *e2econtext) waitForOperatorToBeReady(t *testing.T) {
 		if len(od.Status.Conditions) == 0 {
 			return fmt.Errorf("no conditions for deployment yet")
 		}
-		for cond := range od.Status.Conditions {
+		for _, cond := range od.Status.Conditions {
 			if cond.Type == appsv1.DeploymentAvailable {
 				return nil
 			}
