@@ -314,9 +314,8 @@ func (ctx *e2econtext) waitForOperatorToBeReady(t *testing.T) {
 			if cond.Type == appsv1.DeploymentAvailable {
 				return nil
 			}
-			return fmt.Errorf("the deployment is not ready yet")
 		}
-		return nil
+		return fmt.Errorf("the deployment is not ready yet")
 	}
 
 	notifyFunc := func(err error, d time.Duration) {
