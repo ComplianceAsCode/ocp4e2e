@@ -829,6 +829,44 @@ func (ctx *e2econtext) verifyCheckResultsForSuite(
 	return len(resList.Items) - len(excludeList), manualRemediations
 }
 
+func (ctx *e2econtext) summarizeSuiteFindings(t *testing.T, suite string) {
+	su := &cmpv1alpha1.ComplianceSuite{}
+	key := types.NamespacedName{Name: suite, Namespace: ctx.OperatorNamespacedName.Namespace}
+	err := ctx.dynclient.Get(goctx.TODO(), key, su)
+	if err != nil {
+		t.Fatalf("failed to get ComplianceSuite %s: %s", suite, err)
+	}
+
+	for _, scan := range su.Spec.Scans {
+		results := make(map[cmpv1alpha1.ComplianceCheckStatus]int)
+		resultList := &cmpv1alpha1.ComplianceCheckResultList{}
+		label := dynclient.MatchingLabels{cmpv1alpha1.ComplianceScanLabel: scan.Name}
+		err := ctx.dynclient.List(goctx.TODO(), resultList, label)
+		if err != nil {
+			t.Fatalf("failed to get CompliacneCheckResults for ComplianceScan %s: %s", scan.Name, err)
+		}
+		for _, result := range resultList.Items {
+			results[result.Status]++
+		}
+		t.Logf("Scan %s contained %d total checks", scan.Name, len(resultList.Items))
+		for status, number := range results {
+			percentage := (float32(number) / float32(len(resultList.Items)) * 100)
+			t.Logf("Scan %s contained %d checks with %s status (%.2f%%)", scan.Name, number, status, percentage)
+		}
+
+		failedWithRemediationList := &cmpv1alpha1.ComplianceCheckResultList{}
+		labels := dynclient.MatchingLabels{
+			cmpv1alpha1.ComplianceCheckResultStatusLabel:    string(cmpv1alpha1.CheckResultFail),
+			cmpv1alpha1.ComplianceCheckResultHasRemediation: "",
+		}
+		err = ctx.dynclient.List(goctx.TODO(), failedWithRemediationList, labels)
+		if err != nil {
+			t.Fatalf("failed to get ComplianceCheckResults with status FAIL and remediations: %s", err)
+		}
+		t.Logf("Scan %s contained %d checks that failed, but have a remediation available", scan.Name, len(failedWithRemediationList.Items))
+	}
+}
+
 func (ctx *e2econtext) verifyRule(
 	t *testing.T, result *cmpv1alpha1.ComplianceCheckResult, afterRemediations bool,
 ) (string, bool, error) {
