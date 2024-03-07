@@ -64,6 +64,7 @@ func TestE2e(t *testing.T) {
 		numberOfFailuresInit = ctx.getFailuresForSuite(t, suite)
 		numberOfCheckResultsInit, manualRemediations = ctx.verifyCheckResultsForSuite(t, suite, false)
 		numberOfInvalidResults = ctx.getInvalidResultsFromSuite(t, suite)
+		ctx.summarizeSuiteFindings(t, suite)
 	})
 
 	// nolint:nestif
@@ -154,4 +155,5 @@ func TestE2e(t *testing.T) {
 				" Got %d Error/None results", numberOfInvalidResults)
 		}
 	})
+	ctx.summarizeSuiteFindings(t, suite)
 }
