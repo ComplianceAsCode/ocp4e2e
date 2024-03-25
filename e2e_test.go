@@ -67,6 +67,11 @@ func TestE2e(t *testing.T) {
 		ctx.summarizeSuiteFindings(t, suite)
 	})
 
+	if ctx.bypassRemediations {
+		t.Logf("Bypassing remediations and assertions relating to remediations")
+		return
+	}
+
 	// nolint:nestif
 	if numberOfRemediations > 0 || len(manualRemediations) > 0 {
 
