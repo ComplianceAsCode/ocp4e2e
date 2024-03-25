@@ -62,10 +62,11 @@ type RuleTest struct {
 }
 
 var (
-	product         string
-	profile         string
-	contentImage    string
-	installOperator bool
+	product            string
+	profile            string
+	contentImage       string
+	installOperator    bool
+	bypassRemediations bool
 )
 
 var (
@@ -80,15 +81,16 @@ type e2econtext struct {
 	ContentImage           string
 	OperatorNamespacedName types.NamespacedName
 	// These are only needed for the test and will only be used in this package
-	rootdir         string
-	profilepath     string
-	product         string
-	resourcespath   string
-	benchmarkRoot   string
-	version         string
-	installOperator bool
-	dynclient       dynclient.Client
-	kubecfg         *rest.Config
+	rootdir            string
+	profilepath        string
+	product            string
+	resourcespath      string
+	benchmarkRoot      string
+	version            string
+	installOperator    bool
+	bypassRemediations bool
+	dynclient          dynclient.Client
+	kubecfg            *rest.Config
 }
 
 func init() {
@@ -97,6 +99,7 @@ func init() {
 	flag.StringVar(&contentImage, "content-image", "", "The path to the image with the content to test")
 	flag.BoolVar(&installOperator, "install-operator", true, "Should the test-code install the operator or not? "+
 		"This is useful if you need to test with your own deployment of the operator")
+	flag.BoolVar(&bypassRemediations, "bypass-remediations", false, "Do not apply remedations and summarize results after the first scan")
 }
 
 func newE2EContext(t *testing.T) *e2econtext {
@@ -128,6 +131,7 @@ func newE2EContext(t *testing.T) *e2econtext {
 		benchmarkRoot:          benchmarkRoot,
 		product:                product,
 		installOperator:        installOperator,
+		bypassRemediations:     bypassRemediations,
 	}
 }
 
