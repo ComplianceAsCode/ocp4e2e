@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/exec"
 	"path"
@@ -954,7 +955,8 @@ func (ctx *e2econtext) getTestDefinition(rulePath string) ([]byte, error) {
 	gbuf, gerr := ioutil.ReadFile(testFilePath)
 	if os.IsNotExist(gerr) {
 		// let's check for other files and fail if they don't exist
-		files, err := os.ReadDir(ruleTestDir)
+		files, err := os.ReadDir(path.Join(rulePath, ruleTestDir))
+		log.Printf("E2E-INFO: No global test file or current version test file found, checking for other versioned files in %s", path.Join(rulePath, ruleTestDir))
 		if err != nil {
 			return nil, err
 		}
