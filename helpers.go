@@ -62,9 +62,14 @@ type RuleTest struct {
 	ExcludeFromCount       interface{} `yaml:"exclude_from_count,omitempty"`
 }
 
+type RuleTestResults struct {
+	RuleResults map[string]RuleTest `yaml:"rule_results"`
+}
+
 var (
 	product            string
 	profile            string
+	platform           string
 	contentImage       string
 	installOperator    bool
 	bypassRemediations bool
@@ -85,6 +90,9 @@ type e2econtext struct {
 	rootdir            string
 	profilepath        string
 	product            string
+	profileAssert      RuleTestResults
+	profileAssertExist bool
+	platform           string
 	resourcespath      string
 	benchmarkRoot      string
 	version            string
@@ -97,6 +105,7 @@ type e2econtext struct {
 func init() {
 	flag.StringVar(&profile, "profile", "", "The profile to check")
 	flag.StringVar(&product, "product", "", "The product this profile is for - e.g. 'rhcos4', 'ocp4'")
+	flag.StringVar(&platform, "platform", "", "The platform that the tests are running on - e.g. 'ocp', 'rosa'")
 	flag.StringVar(&contentImage, "content-image", "", "The path to the image with the content to test")
 	flag.BoolVar(&installOperator, "install-operator", true, "Should the test-code install the operator or not? "+
 		"This is useful if you need to test with your own deployment of the operator")
@@ -131,6 +140,7 @@ func newE2EContext(t *testing.T) *e2econtext {
 		resourcespath:          resourcespath,
 		benchmarkRoot:          benchmarkRoot,
 		product:                product,
+		platform:               platform,
 		installOperator:        installOperator,
 		bypassRemediations:     bypassRemediations,
 	}
@@ -795,6 +805,7 @@ func (ctx *e2econtext) getInvalidResultsFromSuite(t *testing.T, s string) int {
 func (ctx *e2econtext) verifyCheckResultsForSuite(
 	t *testing.T, s string, afterRemediations bool,
 ) (nresults int, manualRems []string) {
+	// RuleTestResults
 	excludeList := make(map[string]int)
 	manualRemediationSet := map[string]bool{}
 	resList := &cmpv1alpha1.ComplianceCheckResultList{}
@@ -810,6 +821,9 @@ func (ctx *e2econtext) verifyCheckResultsForSuite(
 	} else {
 		t.Logf("There were no results for the ComplianceSuite: %s", s)
 	}
+
+	ctx.assertProfileAssertionFile(t, resList, afterRemediations)
+
 	for idx := range resList.Items {
 		check := &resList.Items[idx]
 		t.Logf("Result - Name: %s - Status: %s - Severity: %s", check.Name, check.Status, check.Severity)
@@ -870,6 +884,55 @@ func (ctx *e2econtext) summarizeSuiteFindings(t *testing.T, suite string) {
 		}
 		t.Logf("Scan %s contained %d checks that failed, but have a remediation available", scan.Name, len(failedWithRemediationList.Items))
 	}
+	// print out the profile assertion file if it doesn't exist
+	if !ctx.profileAssertExist && ctx.profileAssert.RuleResults != nil {
+		profileTestBytes, err := yaml.Marshal(ctx.profileAssert)
+		if err != nil {
+			t.Fatalf("failed to marshal profile assertion file: %s", err)
+		}
+		t.Logf("Profile assertion file:\n%s", string(profileTestBytes))
+	}
+}
+
+func (ctx *e2econtext) assertProfileAssertionFile(t *testing.T, resultList *cmpv1alpha1.ComplianceCheckResultList, afterRemediations bool) {
+	profileTestFilePath := path.Join(ctx.rootdir, "tests", "assertions", ctx.platform, ctx.product+"-"+ctx.Profile+"-"+ctx.version+".yml")
+	_, err := os.Stat(profileTestFilePath)
+	if os.IsNotExist(err) {
+		t.Logf("failed to find profile assertion file %s", profileTestFilePath)
+	}
+
+	buf, err := os.ReadFile(profileTestFilePath)
+
+	// do not fail on not found, we will print out the file according to the test result
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("failed to read profile assertion file: %s", err)
+		ctx.profileAssertExist = false
+	} else if os.IsNotExist(err) {
+		t.Logf("No profile assertion file found, you should create %s to assert the test results", profileTestFilePath)
+		ctx.profileAssertExist = false
+		if ctx.profileAssert.RuleResults == nil {
+			ctx.profileAssert.RuleResults = make(map[string]RuleTest)
+		}
+		for idx := range resultList.Items {
+			check := &resultList.Items[idx]
+			ruleResult := ctx.profileAssert.RuleResults[check.Name]
+			if !afterRemediations {
+				ruleResult.DefaultResult = &check.Status
+			} else {
+				ruleResult.ResultAfterRemediation = &check.Status
+			}
+			ctx.profileAssert.RuleResults[check.Name] = ruleResult
+		}
+		return
+	}
+	ctx.profileAssertExist = true
+
+	profileTest := &RuleTestResults{}
+	if err := yaml.Unmarshal(buf, &profileTest); err != nil {
+		t.Fatalf("failed to unmarshal profile assertion file: %s", err)
+	}
+
+	ctx.profileAssert = *profileTest
 }
 
 func (ctx *e2econtext) verifyRule(
@@ -884,46 +947,50 @@ func (ctx *e2econtext) verifyRule(
 	if err != nil {
 		return "", false, err
 	}
+	ruleResultName := result.Name
 	rulePath := strings.Trim(string(rulePathBytes), "\n")
 
-	buf, err := ctx.getTestDefinition(rulePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// There's no test file, so no need to verify
-			return "", false, nil
-		}
-		return "", false, err
-	}
-
-	test := RuleTest{}
-	if err := yaml.Unmarshal(buf, &test); err != nil {
-		return "", false, err
-	}
-
 	remPath := ctx.getManualRemediationPath(rulePath)
+	test := RuleTest{}
+	if !ctx.profileAssertExist {
+		buf, err := ctx.getTestDefinition(rulePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// There's no test file, so no need to verify
+				return "", false, nil
+			}
+			return "", false, err
+		}
+
+		if err := yaml.Unmarshal(buf, &test); err != nil {
+			return "", false, err
+		}
+	} else {
+		test = ctx.profileAssert.RuleResults[ruleResultName]
+	}
 
 	// Initial run
 	// nolint:nestif
 	if !afterRemediations {
-		if err := verifyRuleResult(result, test.DefaultResult, test, ruleName); err != nil {
+		if err := verifyRuleResult(result, test.DefaultResult, test, ruleResultName); err != nil {
 			return remPath, isExcluded(test.ExcludeFromCount), err
 		}
 	} else {
 		// after remediations
 		// If we expect a change after remediation is applied, let's test for it
 		if test.ResultAfterRemediation != nil {
-			if err := verifyRuleResult(result, test.ResultAfterRemediation, test, ruleName); err != nil {
+			if err := verifyRuleResult(result, test.ResultAfterRemediation, test, ruleResultName); err != nil {
 				return remPath, isExcluded(test.ExcludeFromCount), err
 			}
 		} else {
 			// Check that the default didn't change
-			if err := verifyRuleResult(result, test.DefaultResult, test, ruleName); err != nil {
+			if err := verifyRuleResult(result, test.DefaultResult, test, ruleResultName); err != nil {
 				return remPath, isExcluded(test.ExcludeFromCount), err
 			}
 		}
 	}
 
-	t.Logf("Rule %s matched expected result", ruleName)
+	t.Logf("Rule %s matched expected result", ruleResultName)
 	return remPath, isExcluded(test.ExcludeFromCount), err
 }
 

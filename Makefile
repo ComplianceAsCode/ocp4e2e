@@ -11,6 +11,7 @@ BYPASS_REMEDIATIONS?=false
 
 GOLANGCI_LINT_VERSION = v1.40.1
 BUILD_DIR := build
+PLATFORM?=ocp
 
 .PHONY: all
 all: e2e
@@ -18,7 +19,7 @@ all: e2e
 .PHONY: e2e
 e2e: ## Run the e2e tests. This requires that the PROFILE and PRODUCT environment variables be set.
 ## idp_fix.patch is used to fix route destination cert for keycloak IdP deployment
-	go test $(TEST_FLAGS) . -profile="$(PROFILE)" -product="$(PRODUCT)" -content-image="$(CONTENT_IMAGE)" -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" | tee .e2e-test-results.out
+	go test $(TEST_FLAGS) . -platform="$(PLATFROM)" -profile="$(PROFILE)" -product="$(PRODUCT)" -content-image="$(CONTENT_IMAGE)" -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" | tee .e2e-test-results.out
 
 .PHONY: help
 help: ## Show this help screen
