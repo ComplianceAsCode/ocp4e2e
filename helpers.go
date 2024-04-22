@@ -105,7 +105,7 @@ type e2econtext struct {
 func init() {
 	flag.StringVar(&profile, "profile", "", "The profile to check")
 	flag.StringVar(&product, "product", "", "The product this profile is for - e.g. 'rhcos4', 'ocp4'")
-	flag.StringVar(&platform, "platform", "", "The platform that the tests are running on - e.g. 'ocp', 'rosa'")
+	flag.StringVar(&platform, "platform", "ocp4", "The platform that the tests are running on - e.g. 'ocp', 'rosa'")
 	flag.StringVar(&contentImage, "content-image", "", "The path to the image with the content to test")
 	flag.BoolVar(&installOperator, "install-operator", true, "Should the test-code install the operator or not? "+
 		"This is useful if you need to test with your own deployment of the operator")
