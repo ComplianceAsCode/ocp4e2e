@@ -49,6 +49,7 @@ const (
 	catalogSourcePath         = "compliance-operator-catalog-source.yaml"
 	operatorGroupPath         = "compliance-operator-operator-group.yaml"
 	subscriptionPath          = "compliance-operator-alpha-subscription.yaml"
+	rosaSubscriptionPath      = "compliance-operator-rosa-subscription.yaml"
 	apiPollInterval           = 5 * time.Second
 	testProfilebundleName     = "e2e"
 	autoApplySettingsName     = "auto-apply-debug"
@@ -290,7 +291,16 @@ func (ctx *e2econtext) ensureOperatorGroupExists(t *testing.T) {
 }
 
 func (ctx *e2econtext) ensureSubscriptionExists(t *testing.T) {
-	manifestpath := path.Join(ctx.resourcespath, subscriptionPath)
+	var manifestpath string
+	// We need to modify the default deployment through the subscription if
+	// we're dealing with a ROSA cluster because we only have worker nodes
+	// available to run the operator. If we don't do this, the deployment
+	// will spin waiting for master nodes to schedule the operator on.
+	if ctx.platform == "rosa" {
+		manifestpath = path.Join(ctx.resourcespath, rosaSubscriptionPath)
+	} else {
+		manifestpath = path.Join(ctx.resourcespath, subscriptionPath)
+	}
 	ctx.ensureObjectExists(t, manifestpath)
 }
 
