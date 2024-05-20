@@ -52,7 +52,7 @@ const (
 	rosaSubscriptionPath      = "compliance-operator-rosa-subscription.yaml"
 	apiPollInterval           = 5 * time.Second
 	testProfilebundleName     = "e2e"
-	autoApplySettingsName     = "auto-apply-debug"
+	e2eSettingsName           = "e2e-debug"
 	manualRemediationsTimeout = 30 * time.Minute
 )
 
@@ -410,17 +410,18 @@ func (ctx *e2econtext) ensureTestSettings(t *testing.T) {
 
 	// Ensure auto-apply
 	key := types.NamespacedName{
-		Name:      autoApplySettingsName,
+		Name:      e2eSettingsName,
 		Namespace: ctx.OperatorNamespacedName.Namespace,
 	}
 	autoApplySettings := defaultSettings.DeepCopy()
 	// Delete Object Meta so we reset unwanted references
 	autoApplySettings.ObjectMeta = metav1.ObjectMeta{
-		Name:      autoApplySettingsName,
+		Name:      e2eSettingsName,
 		Namespace: ctx.OperatorNamespacedName.Namespace,
 	}
-	autoApplySettings.AutoApplyRemediations = true
-	autoApplySettings.Debug = true
+	if !ctx.bypassRemediations {
+		autoApplySettings.AutoApplyRemediations = true
+	}
 	autoApplySettings.ShowNotApplicable = true // so that we can test if a setting goes from PASS/FAIL to N/A
 	err = backoff.RetryNotify(func() error {
 		found := &cmpv1alpha1.ScanSetting{}
@@ -537,7 +538,7 @@ func (ctx *e2econtext) createBindingForProfile(t *testing.T) string {
 		SettingsRef: &cmpv1alpha1.NamedObjectReference{
 			APIGroup: "compliance.openshift.io/v1alpha1",
 			Kind:     "ScanSetting",
-			Name:     autoApplySettingsName,
+			Name:     e2eSettingsName,
 		},
 	}
 
