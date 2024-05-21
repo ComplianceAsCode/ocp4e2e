@@ -574,8 +574,9 @@ func (ctx *e2econtext) createBindingForProfile(t *testing.T) string {
 
 func (ctx *e2econtext) waitForComplianceSuite(t *testing.T, suiteName string) {
 	key := types.NamespacedName{Name: suiteName, Namespace: ctx.OperatorNamespacedName.Namespace}
-	// aprox. 15 min
-	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(apiPollInterval), 180)
+	// If a scan takes longer than 30 minutes to spin up and finish,
+	// something else is likely interfering or causing issues.
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(apiPollInterval), 360)
 
 	err := backoff.RetryNotify(func() error {
 		suite := &cmpv1alpha1.ComplianceSuite{}
@@ -591,7 +592,7 @@ func (ctx *e2econtext) waitForComplianceSuite(t *testing.T, suiteName string) {
 			scanstatus := &suite.Status.ScanStatuses[idx]
 			if scanstatus.Phase != cmpv1alpha1.PhaseDone {
 				// Returning an error merely makes this retry after the interval
-				return fmt.Errorf("still waiting for the scans to be done")
+				return fmt.Errorf("suite %s is %s", suiteName, suite.Status.Phase)
 			}
 			if scanstatus.Result == cmpv1alpha1.ResultError {
 				// If there was an error, we can stop already.
@@ -600,8 +601,8 @@ func (ctx *e2econtext) waitForComplianceSuite(t *testing.T, suiteName string) {
 			}
 		}
 		return nil
-	}, bo, func(error, time.Duration) {
-		t.Logf("ComplianceSuite %s is still not ready", suiteName)
+	}, bo, func(e error, ti time.Duration) {
+		t.Logf("ComplianceSuite %s is not DONE: %s", suiteName, e)
 	})
 	if err != nil {
 		t.Fatalf("The Compliance Suite '%s' didn't get to DONE phase: %s", key.Name, err)
