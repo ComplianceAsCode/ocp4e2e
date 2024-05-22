@@ -390,6 +390,30 @@ func (ctx *e2econtext) ensureTestProfileBundle(t *testing.T) {
 	}
 }
 
+func (ctx *e2econtext) waitForValidTestProfileBundle(t *testing.T) {
+	key := types.NamespacedName{
+		Name:      testProfilebundleName,
+		Namespace: ctx.OperatorNamespacedName.Namespace,
+	}
+
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(apiPollInterval), 180)
+	err := backoff.RetryNotify(func() error {
+		found := &cmpv1alpha1.ProfileBundle{}
+		if err := ctx.dynclient.Get(goctx.TODO(), key, found); err != nil {
+			return err
+		}
+		if found.Status.DataStreamStatus != cmpv1alpha1.DataStreamValid {
+			return fmt.Errorf("%s ProfileBundle is in %s state", found.Name, found.Status.DataStreamStatus)
+		}
+		return nil
+	}, bo, func(err error, d time.Duration) {
+		fmt.Printf("waiting for ProfileBundle to parse: %s\n", err)
+	})
+	if err != nil {
+		t.Fatalf("failed to ensure test PB: %s", err)
+	}
+}
+
 func (ctx *e2econtext) ensureTestSettings(t *testing.T) {
 	defaultkey := types.NamespacedName{
 		Name:      "default",
