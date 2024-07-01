@@ -1002,7 +1002,17 @@ func (ctx *e2econtext) verifyRule(
 			return "", false, err
 		}
 	} else {
-		test = ctx.profileAssert.RuleResults[ruleResultName]
+		if test, testExists := ctx.profileAssert.RuleResults[ruleResultName]; !testExists {
+			testEntry := RuleTest{}
+			if !afterRemediations {
+				testEntry.DefaultResult = foundResult.status
+			} else {
+				testEntry.ResultAfterRemediation = foundResult.status
+			}
+			err := fmt.Errorf("E2E-Error: Rule assertion entry for '%s' was not found.\n"+
+				"Check and add the following results to the assertion file:\n%s", ruleResultName, testEntry)
+			return remPath, isExcluded(test.ExcludeFromCount), err
+		}
 	}
 
 	// Initial run
