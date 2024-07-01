@@ -93,6 +93,7 @@ type e2econtext struct {
 	product            string
 	profileAssert      RuleTestResults
 	profileAssertExist bool
+	missingAssertions  map[string]RuleTest
 	platform           string
 	resourcespath      string
 	benchmarkRoot      string
@@ -102,6 +103,8 @@ type e2econtext struct {
 	dynclient          dynclient.Client
 	kubecfg            *rest.Config
 }
+
+var ruleAssertionMissingError = errors.New("Rule assertion missing")
 
 func init() {
 	flag.StringVar(&profile, "profile", "", "The profile to check")
@@ -848,6 +851,10 @@ func (ctx *e2econtext) verifyCheckResultsForSuite(
 	matchLabels := dynclient.MatchingLabels{
 		cmpv1alpha1.SuiteLabel: s,
 	}
+
+	if ctx.missingAssertions == nil {
+		ctx.missingAssertions = make(map[string]RuleTest)
+	}
 	err := ctx.dynclient.List(goctx.TODO(), resList, matchLabels)
 	if err != nil {
 		t.Fatalf("Couldn't get result list")
@@ -870,6 +877,16 @@ func (ctx *e2econtext) verifyCheckResultsForSuite(
 		}
 		if err != nil {
 			t.Error(err)
+			if errors.Is(err, ruleAssertionMissingError) {
+				if missingRuleTest, ok := ctx.missingAssertions[check.Name]; ok {
+					missingRuleTest.ResultAfterRemediation = &check.Status
+					ctx.missingAssertions[check.Name] = missingRuleTest
+				} else {
+					missingRuleTest := RuleTest{}
+					missingRuleTest.DefaultResult = &check.Status
+					ctx.missingAssertions[check.Name] = missingRuleTest
+				}
+			}
 		}
 		if manualRem != "" {
 			manualRemediationSet[manualRem] = true
@@ -880,6 +897,15 @@ func (ctx *e2econtext) verifyCheckResultsForSuite(
 	for key := range manualRemediationSet {
 		manualRemediations = append(manualRemediations, key)
 	}
+
+    // Print any missing assertion rule entries
+    if len(ctx.missingAssertions) != 0 {
+        missingAssertionBytes, err := yaml.Marshal(ctx.missingAssertions)
+        if err != nil {
+            t.Fatalf("failed to marshal missing rule assertion entries: %s", err)
+        }
+        t.Logf("Missing rule assertion entries:\n%s", string(missingAssertionBytes))
+    }
 
 	return len(resList.Items) - len(excludeList), manualRemediations
 }
@@ -1002,7 +1028,12 @@ func (ctx *e2econtext) verifyRule(
 			return "", false, err
 		}
 	} else {
-		test = ctx.profileAssert.RuleResults[ruleResultName]
+		var ok bool
+		if test, ok = ctx.profileAssert.RuleResults[ruleResultName]; !ok {
+			err := fmt.Errorf("E2E-Error: %s: %w", ruleResultName, ruleAssertionMissingError)
+
+			return remPath, false, err
+		}
 	}
 
 	// Initial run
