@@ -1228,7 +1228,7 @@ func (ctx *e2econtext) runManualRemediation(t *testing.T, cmdctx goctx.Context, 
 	out, err := cmd.CombinedOutput()
 
 	if errors.Is(cmdctx.Err(), goctx.DeadlineExceeded) {
-		t.Errorf("Command '%s' timed out", rem)
+		t.Errorf("Command '%s' timed out:\nOutput:\n%s\nError:\n%s\n", rem, out, err)
 		return
 	}
 
