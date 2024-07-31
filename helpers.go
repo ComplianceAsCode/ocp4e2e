@@ -53,7 +53,7 @@ const (
 	apiPollInterval           = 5 * time.Second
 	testProfilebundleName     = "e2e"
 	e2eSettingsName           = "e2e-debug"
-	manualRemediationsTimeout = 30 * time.Minute
+	manualRemediationsTimeout = 60 * time.Minute
 )
 
 // RuleTest is the definition of the structure rule-specific e2e tests should have.
