@@ -97,6 +97,10 @@ func TestE2e(t *testing.T) {
 			})
 		}
 
+		if err := ctx.waitForStableCluster(); err != nil {
+			t.Error(err)
+		}
+
 		var scanN int
 
 		for scanN = 2; scanN < 5; scanN++ {
