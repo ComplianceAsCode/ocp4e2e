@@ -125,10 +125,13 @@ func TestE2e(t *testing.T) {
 				time.Sleep(30 * time.Second)
 				ctx.waitForMachinePoolUpdate(t, "master")
 				ctx.waitForMachinePoolUpdate(t, "worker")
+				// TODO: Vincent056 We need to find a way for usb-guards serviceto be started before we can rescan the cluster
+				// right now we are waiting for 45 seconds, but we need to find a better way to do this
+				time.Sleep(45 * time.Second)
 			})
 		}
 
-		if scanN == 4 {
+		if scanN == 5 {
 			t.Fatalf("Reached maximum number of re-scans. There might be a remediation dependency issue.")
 		}
 
