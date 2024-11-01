@@ -1039,19 +1039,19 @@ func (ctx *e2econtext) verifyRule(
 	// Initial run
 	// nolint:nestif
 	if !afterRemediations {
-		if err := verifyRuleResult(result, test.DefaultResult, test, ruleResultName); err != nil {
+		if err := verifyRuleResult(result, test.DefaultResult, test, ruleResultName, "default"); err != nil {
 			return remPath, isExcluded(test.ExcludeFromCount), err
 		}
 	} else {
 		// after remediations
 		// If we expect a change after remediation is applied, let's test for it
 		if test.ResultAfterRemediation != nil {
-			if err := verifyRuleResult(result, test.ResultAfterRemediation, test, ruleResultName); err != nil {
+			if err := verifyRuleResult(result, test.ResultAfterRemediation, test, ruleResultName, "remediated"); err != nil {
 				return remPath, isExcluded(test.ExcludeFromCount), err
 			}
 		} else {
 			// Check that the default didn't change
-			if err := verifyRuleResult(result, test.DefaultResult, test, ruleResultName); err != nil {
+			if err := verifyRuleResult(result, test.DefaultResult, test, ruleResultName, "default"); err != nil {
 				return remPath, isExcluded(test.ExcludeFromCount), err
 			}
 		}
@@ -1130,13 +1130,14 @@ func verifyRuleResult(
 	expectedResult interface{},
 	testDef RuleTest,
 	ruleName string,
+	phase string,
 ) error {
 	if matches, err := matchFoundResultToExpectation(foundResult, expectedResult); !matches || err != nil {
 		if err != nil {
 			return fmt.Errorf("E2E-ERROR: The e2e YAML for rule '%s' is malformed: %v . Got error: %w", ruleName, testDef, err)
 		}
-		return fmt.Errorf("E2E-FAILURE: The expected result for the %s rule didn't match. Expected '%s', Got '%s'",
-			ruleName, expectedResult, foundResult.Status)
+		return fmt.Errorf("E2E-FAILURE: The expected %s result for the %s rule didn't match. Expected '%s', Got '%s'",
+			phase, ruleName, expectedResult, foundResult.Status)
 	}
 	return nil
 }
