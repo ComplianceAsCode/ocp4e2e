@@ -1,9 +1,7 @@
 package ocp4e2e
 
 import (
-	"fmt"
 	"testing"
-	"time"
 )
 
 func TestE2e(t *testing.T) {
@@ -40,130 +38,44 @@ func TestE2e(t *testing.T) {
 		}
 	})
 
-	// Remediations
-	var numberOfRemediations int
+	t.Run("Find and categorize rules", func(t *testing.T) {
+		platformRules, nodeRules := ctx.findAndCategorizeRules(t)
+		t.Logf("Found %d platform rules and %d node rules", len(platformRules), len(nodeRules))
 
-	// Failures
-	var numberOfFailuresInit int
-	var numberOfFailuresEnd int
-
-	// Check Results
-	var numberOfCheckResultsInit int
-	var numberOfCheckResultsEnd int
-
-	// Invalid check results
-	var numberOfInvalidResults int
-
-	// suite name
-	var suite string
-
-	var manualRemediations []string
-
-	t.Run("Run first compliance scan", func(t *testing.T) {
-		// Create suite and auto-apply remediations
-		suite = ctx.createBindingForProfile(t)
-		ctx.waitForComplianceSuite(t, suite)
-		numberOfRemediations = ctx.getRemediationsForSuite(t, suite)
-		numberOfFailuresInit = ctx.getFailuresForSuite(t, suite)
-		numberOfCheckResultsInit, manualRemediations = ctx.verifyCheckResultsForSuite(t, suite, false)
-		numberOfInvalidResults = ctx.getInvalidResultsFromSuite(t, suite)
-		ctx.summarizeSuiteFindings(t, suite)
+		// Store rules in context for later use
+		ctx.platformRules = platformRules
+		ctx.nodeRules = nodeRules
 	})
 
-	if ctx.bypassRemediations {
-		t.Logf("Bypassing remediations and assertions relating to remediations")
-		return
+	// Determine which tests to run based on testType
+	runPlatformTests := ctx.testType == "platform" || ctx.testType == "all"
+	runNodeTests := ctx.testType == "node" || ctx.testType == "all"
+
+	if runPlatformTests {
+		t.Run("Create platform tailored profile", func(t *testing.T) {
+			ctx.createPlatformTailoredProfile(t)
+		})
+
+		t.Run("Create scan setting binding and run platform scan", func(t *testing.T) {
+			suiteName := ctx.createPlatformScanBinding(t)
+			ctx.waitForComplianceSuite(t, suiteName)
+			ctx.verifyPlatformScanResults(t, suiteName)
+		})
 	}
 
-	//nolint:nestif
-	if numberOfRemediations > 0 || len(manualRemediations) > 0 {
-		t.Run("Wait for Remediations to apply", func(t *testing.T) {
-			// Lets wait for the MachineConfigs to start applying
-			time.Sleep(30 * time.Second)
-			ctx.waitForMachinePoolUpdate(t, "worker")
-			ctx.waitForMachinePoolUpdate(t, "master")
+	if runNodeTests {
+		t.Run("Create node tailored profile", func(t *testing.T) {
+			ctx.createNodeTailoredProfile(t)
 		})
 
-		if len(manualRemediations) > 0 {
-			// Wait some time after MachineConfigPool is ready to apply manual remediation
-			time.Sleep(60 * time.Second)
-			t.Run("Apply manual remediations", func(t *testing.T) {
-				ctx.applyManualRemediations(t, manualRemediations)
-			})
-			t.Run("Wait for manual Remediations to apply", func(t *testing.T) {
-				// Lets wait for the MachineConfigs to start applying
-				time.Sleep(30 * time.Second)
-				ctx.waitForMachinePoolUpdate(t, "worker")
-				ctx.waitForMachinePoolUpdate(t, "master")
-			})
-		}
-
-		var scanN int
-
-		for scanN = 2; scanN < 5; scanN++ {
-			var needsMoreRemediations bool
-			t.Run(fmt.Sprintf("Check for remediations with dependencies before scan %d", scanN), func(t *testing.T) {
-				needsMoreRemediations = ctx.suiteHasRemediationsWithUnmetDependencies(t, suite)
-			})
-
-			t.Run(fmt.Sprintf("Run compliance scan #%d", scanN), func(t *testing.T) {
-				ctx.doRescan(t, suite)
-				ctx.waitForComplianceSuite(t, suite)
-
-				// We only actually verify results in the final scan
-				if !needsMoreRemediations {
-					numberOfFailuresEnd = ctx.getFailuresForSuite(t, suite)
-					numberOfCheckResultsEnd, _ = ctx.verifyCheckResultsForSuite(t, suite, true)
-				}
-			})
-
-			if !needsMoreRemediations {
-				break
-			}
-
-			t.Run(fmt.Sprintf("Scan %d: Wait for Remediations to apply", scanN), func(t *testing.T) {
-				// Lets wait for the MachineConfigs to start applying
-				time.Sleep(30 * time.Second)
-				ctx.waitForMachinePoolUpdate(t, "master")
-				ctx.waitForMachinePoolUpdate(t, "worker")
-				// TODO: Vincent056 We need to find a way for usb-guards serviceto be started before we can rescan the cluster
-				// right now we are waiting for 45 seconds, but we need to find a better way to do this
-				time.Sleep(45 * time.Second)
-			})
-		}
-
-		if scanN == 5 {
-			t.Fatalf("Reached maximum number of re-scans. There might be a remediation dependency issue.")
-		}
-
-		t.Run("We should have the same number of check results in each scan", func(t *testing.T) {
-			if numberOfCheckResultsInit != numberOfCheckResultsEnd {
-				t.Errorf("The amount of check results are NOT the same: init -> %d  end %d",
-					numberOfCheckResultsInit, numberOfCheckResultsEnd)
-			} else {
-				t.Logf("The amount of check results are the same: init -> %d  end %d",
-					numberOfCheckResultsInit, numberOfCheckResultsEnd)
-			}
+		t.Run("Create scan setting binding and run node scan", func(t *testing.T) {
+			suiteName := ctx.createNodeScanBinding(t)
+			ctx.waitForComplianceSuite(t, suiteName)
+			ctx.verifyNodeScanResults(t, suiteName)
 		})
-
-		t.Run("We should have less failures", func(t *testing.T) {
-			if numberOfFailuresInit <= numberOfFailuresEnd {
-				t.Errorf("The failures didn't diminish: init -> %d  end %d",
-					numberOfFailuresInit, numberOfFailuresEnd)
-			} else {
-				t.Logf("There are less failures now: init -> %d  end %d",
-					numberOfFailuresInit, numberOfFailuresEnd)
-			}
-		})
-	} else {
-		t.Logf("No remediations were generated from this profile")
 	}
 
-	t.Run("We should have no errors or invalid results", func(t *testing.T) {
-		if numberOfInvalidResults > 0 {
-			t.Errorf("Expected Pass, Fail, Info, or Skip results from platform scans."+
-				" Got %d Error/None results", numberOfInvalidResults)
-		}
-	})
-	ctx.summarizeSuiteFindings(t, suite)
+	if !runPlatformTests && !runNodeTests {
+		t.Fatalf("Invalid test-type: %s. Must be 'platform', 'node', or 'all'", ctx.testType)
+	}
 }

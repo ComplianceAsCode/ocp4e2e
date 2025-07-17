@@ -3,18 +3,15 @@ package ocp4e2e
 import (
 	"bufio"
 	goctx "context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"os/exec"
 	"path"
 	"regexp"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -33,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/wait"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	cgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -73,12 +69,7 @@ var (
 	contentImage       string
 	installOperator    bool
 	bypassRemediations bool
-)
-
-var (
-	ruleTestDir                   = path.Join("tests", "ocp4")
-	ruleTestFilePath              = path.Join(ruleTestDir, "e2e.yml")
-	ruleManualRemediationFilePath = path.Join(ruleTestDir, "e2e-remediation.sh")
+	testType           string
 )
 
 type e2econtext struct {
@@ -90,20 +81,19 @@ type e2econtext struct {
 	rootdir            string
 	profilepath        string
 	product            string
-	profileAssert      RuleTestResults
-	profileAssertExist bool
-	missingAssertions  map[string]RuleTest
 	platform           string
 	resourcespath      string
 	benchmarkRoot      string
 	version            string
 	installOperator    bool
 	bypassRemediations bool
+	testType           string
 	dynclient          dynclient.Client
 	kubecfg            *rest.Config
+	// New fields for refactored test suite
+	platformRules []cmpv1alpha1.Rule
+	nodeRules     []cmpv1alpha1.Rule
 }
-
-var errRuleAssertionMissing = errors.New("rule assertion missing")
 
 func init() {
 	flag.StringVar(&profile, "profile", "", "The profile to check")
@@ -114,6 +104,7 @@ func init() {
 		"This is useful if you need to test with your own deployment of the operator")
 	flag.BoolVar(&bypassRemediations, "bypass-remediations", false,
 		"Do not apply remedations and summarize results after the first scan")
+	flag.StringVar(&testType, "test-type", "all", "Type of rules to test: 'platform', 'node', or 'all' (default)")
 }
 
 func newE2EContext(t *testing.T) *e2econtext {
@@ -147,6 +138,7 @@ func newE2EContext(t *testing.T) *e2econtext {
 		platform:               platform,
 		installOperator:        installOperator,
 		bypassRemediations:     bypassRemediations,
+		testType:               testType,
 	}
 }
 
@@ -495,72 +487,6 @@ func (ctx *e2econtext) setPoolRollingPolicy(t *testing.T) error {
 	return nil
 }
 
-func (ctx *e2econtext) getPrefixedProfileName() string {
-	return testProfilebundleName + "-" + ctx.Profile
-}
-
-func (ctx *e2econtext) createBindingForProfile(t *testing.T) string {
-	var useTailoring bool
-	tailoringfilename := fmt.Sprintf("%s-%s.yaml", ctx.product, ctx.Profile)
-	tailoringpath := path.Join(ctx.resourcespath, "tailorings", tailoringfilename)
-	tp, readErr := readObjFromYAMLFilePath(tailoringpath)
-	if readErr != nil {
-		// We use the profile directly if no tailoring exists
-		if errors.Is(readErr, os.ErrNotExist) {
-			useTailoring = false
-		} else {
-			t.Fatalf("failed read tailoring '%s': %s", tailoringpath, readErr)
-		}
-	} else {
-		useTailoring = true
-		createErr := ctx.dynclient.Create(goctx.TODO(), tp)
-		if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-			t.Fatalf("failed to create tailoring object from '%s': %s", tailoringpath, createErr)
-		}
-	}
-
-	binding := &cmpv1alpha1.ScanSettingBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ctx.getPrefixedProfileName(),
-			Namespace: ctx.OperatorNamespacedName.Namespace,
-		},
-		SettingsRef: &cmpv1alpha1.NamedObjectReference{
-			APIGroup: "compliance.openshift.io/v1alpha1",
-			Kind:     "ScanSetting",
-			Name:     e2eSettingsName,
-		},
-	}
-
-	if !useTailoring {
-		binding.Profiles = []cmpv1alpha1.NamedObjectReference{
-			{
-				APIGroup: "compliance.openshift.io/v1alpha1",
-				Kind:     "Profile",
-				Name:     ctx.getPrefixedProfileName(),
-			},
-		}
-	} else {
-		binding.Profiles = []cmpv1alpha1.NamedObjectReference{
-			{
-				APIGroup: "compliance.openshift.io/v1alpha1",
-				Kind:     "TailoredProfile",
-				Name:     tp.GetName(),
-			},
-		}
-	}
-
-	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(apiPollInterval), 180)
-	err := backoff.RetryNotify(func() error {
-		return ctx.dynclient.Create(goctx.TODO(), binding)
-	}, bo, func(err error, d time.Duration) {
-		fmt.Printf("Couldn't create binding after %s: %s\n", d.String(), err)
-	})
-	if err != nil {
-		t.Fatalf("failed to create binding: %s", err)
-	}
-	return binding.Name
-}
-
 func (ctx *e2econtext) waitForComplianceSuite(t *testing.T, suiteName string) {
 	key := types.NamespacedName{Name: suiteName, Namespace: ctx.OperatorNamespacedName.Namespace}
 	// If a scan takes longer than 30 minutes to spin up and finish,
@@ -599,508 +525,128 @@ func (ctx *e2econtext) waitForComplianceSuite(t *testing.T, suiteName string) {
 	t.Logf("ComplianceSuite %s is DONE", suiteName)
 }
 
-func (ctx *e2econtext) waitForMachinePoolUpdate(t *testing.T, name string) {
-	mcKey := types.NamespacedName{Name: name}
-
-	var lastErr error
-	err := wait.PollImmediate(10*time.Second, 40*time.Minute, func() (bool, error) {
-		pool := &mcfgv1.MachineConfigPool{}
-		lastErr = ctx.dynclient.Get(goctx.TODO(), mcKey, pool)
-		if lastErr != nil {
-			t.Logf("Could not get the pool %s post update. Retrying.", name)
-			return false, nil
-		}
-
-		// Check if the pool has finished updating yet.
-		if (pool.Status.UpdatedMachineCount == pool.Status.MachineCount) &&
-			(pool.Status.UnavailableMachineCount == 0) {
-			t.Logf("The pool %s has updated", name)
-			return true, nil
-		}
-
-		t.Logf("The pool %s has not updated yet. updated %d/%d unavailable %d",
-			name,
-			pool.Status.UpdatedMachineCount, pool.Status.MachineCount,
-			pool.Status.UnavailableMachineCount)
-		return false, nil
-	})
-	// timeout error
-	if err != nil {
-		t.Errorf("E2E-FAILURE: Waiting for pool %s timed out", name)
-	}
-
-	// An actual error at the end of the run
-	if lastErr != nil {
-		t.Errorf("E2E-FAILURE: Waiting for pool %s errored: %s", name, lastErr)
-	}
-}
-
-func (ctx *e2econtext) doRescan(t *testing.T, s string) {
-	scanList := &cmpv1alpha1.ComplianceScanList{}
-	//nolint:errcheck
-	labelSelector, _ := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + s)
-	opts := &dynclient.ListOptions{
-		LabelSelector: labelSelector,
-	}
-	err := ctx.dynclient.List(goctx.TODO(), scanList, opts)
-	if err != nil {
-		t.Fatalf("Couldn't get scan list")
-	}
-	if len(scanList.Items) == 0 {
-		t.Fatal("This suite didn't contain scans")
-	} else {
-		t.Logf("Running a re-scan on %d scans", len(scanList.Items))
-	}
-	for idx := range scanList.Items {
-		updatedScan := scanList.Items[idx].DeepCopy()
-		annotations := updatedScan.GetAnnotations()
-		if annotations == nil {
-			annotations = map[string]string{}
-		}
-		annotations[cmpv1alpha1.ComplianceScanRescanAnnotation] = ""
-		updatedScan.SetAnnotations(annotations)
-
-		bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(apiPollInterval), 180)
-		err := backoff.RetryNotify(func() error {
-			return ctx.dynclient.Update(goctx.TODO(), updatedScan)
-		}, bo, func(err error, d time.Duration) {
-			fmt.Printf("Couldn't rescan after %s: %s\n", d.String(), err)
-		})
-		if err != nil {
-			t.Fatalf("failed rescan: %s", err)
-		}
-		t.Logf("Annotated scan %s to retrigger", updatedScan.GetName())
-	}
-
-	t.Logf("Waiting for scans to retrigger")
-	var lastErr error
-	err = wait.PollImmediate(2*time.Second, 5*time.Minute, func() (bool, error) {
-		suite := &cmpv1alpha1.ComplianceSuite{}
-		key := types.NamespacedName{Name: s, Namespace: ctx.OperatorNamespacedName.Namespace}
-		lastErr = ctx.dynclient.Get(goctx.TODO(), key, suite)
-		if lastErr != nil {
-			return false, nil
-		}
-		if suite.Status.Phase == cmpv1alpha1.PhaseDone {
-			t.Logf("Scan still on DONE phase... retrying.")
-			return false, nil
-		}
-		// The scan has been reset, we're good to go
-		return true, nil
-	})
-	// timeout error
-	if err != nil {
-		t.Fatalf("Timed out waiting for scan to be reset: %s", err)
-	}
-
-	// An actual error at the end of the run
-	if lastErr != nil {
-		t.Fatalf("Error occurred while waiting for scan to be reset: %s", lastErr)
-	}
-	t.Logf("All scans retriggered")
-}
-
-func (ctx *e2econtext) getRemediationsForSuite(t *testing.T, s string) int {
-	remList := &cmpv1alpha1.ComplianceRemediationList{}
-	//nolint:errcheck
-	labelSelector, _ := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + s)
-	opts := &dynclient.ListOptions{
-		LabelSelector: labelSelector,
-	}
-	err := ctx.dynclient.List(goctx.TODO(), remList, opts)
-	if err != nil {
-		t.Fatalf("Couldn't get remediation list")
-	}
-	if len(remList.Items) > 0 {
-		t.Logf("Remediations from ComplianceSuite: %s", s)
-	} else {
-		t.Log("This suite didn't generate remediations")
-	}
-	for idx := range remList.Items {
-		t.Logf("- %s", remList.Items[idx].Name)
-	}
-	return len(remList.Items)
-}
-
-func (ctx *e2econtext) suiteHasRemediationsWithUnmetDependencies(t *testing.T, s string) bool {
-	remList := &cmpv1alpha1.ComplianceRemediationList{}
-	//nolint:errcheck
-	labelSelector, _ := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + s + "," +
-		cmpv1alpha1.RemediationHasUnmetDependenciesLabel)
-	opts := &dynclient.ListOptions{
-		LabelSelector: labelSelector,
-	}
-	err := ctx.dynclient.List(goctx.TODO(), remList, opts)
-	if err != nil {
-		t.Fatalf("Couldn't get remediation list")
-	}
-	if len(remList.Items) > 0 {
-		t.Logf("Remediations from ComplianceSuite: %s", s)
-	} else {
-		t.Log("This suite didn't contain remediations with unmet dependencies")
-	}
-	for idx := range remList.Items {
-		t.Logf("- %s", remList.Items[idx].Name)
-	}
-	return len(remList.Items) > 0
-}
-
-func (ctx *e2econtext) getFailuresForSuite(t *testing.T, s string) int {
-	failList := &cmpv1alpha1.ComplianceCheckResultList{}
-	matchLabels := dynclient.MatchingLabels{
-		cmpv1alpha1.SuiteLabel:                               s,
-		string(cmpv1alpha1.ComplianceCheckResultStatusLabel): string(cmpv1alpha1.CheckResultFail),
-	}
-	err := ctx.dynclient.List(goctx.TODO(), failList, matchLabels)
-	if err != nil {
-		t.Fatalf("Couldn't get check result list")
-	}
-	if len(failList.Items) > 0 {
-		t.Logf("Failures from ComplianceSuite: %s", s)
-	}
-	for idx := range failList.Items {
-		t.Logf("- %s", failList.Items[idx].Name)
-	}
-	return len(failList.Items)
-}
-
-// This returns the number of results that are either CheckResultError or CheckResultNoResult.
-func (ctx *e2econtext) getInvalidResultsFromSuite(t *testing.T, s string) int {
-	errList := &cmpv1alpha1.ComplianceCheckResultList{}
-	matchLabels := dynclient.MatchingLabels{
-		cmpv1alpha1.SuiteLabel:                               s,
-		string(cmpv1alpha1.ComplianceCheckResultStatusLabel): string(cmpv1alpha1.CheckResultError),
-	}
-	err := ctx.dynclient.List(goctx.TODO(), errList, matchLabels)
-	if err != nil {
-		t.Fatalf("Couldn't get result list")
-	}
-	if len(errList.Items) > 0 {
-		t.Logf("Errors from ComplianceSuite: %s", s)
-	}
-	for idx := range errList.Items {
-		t.Logf("unexpected Error result - %s", errList.Items[idx].Name)
-	}
-	ret := len(errList.Items)
-
-	noneList := &cmpv1alpha1.ComplianceCheckResultList{}
-	matchLabels = dynclient.MatchingLabels{
-		cmpv1alpha1.SuiteLabel:                               s,
-		string(cmpv1alpha1.ComplianceCheckResultStatusLabel): string(cmpv1alpha1.CheckResultNoResult),
-	}
-	err = ctx.dynclient.List(goctx.TODO(), noneList, matchLabels)
-	if err != nil {
-		t.Fatalf("Couldn't get result list")
-	}
-	if len(noneList.Items) > 0 {
-		t.Logf("None result from ComplianceSuite: %s", s)
-	}
-	for idx := range noneList.Items {
-		t.Logf("unexpected None result - %s", noneList.Items[idx].Name)
-	}
-
-	return ret + len(noneList.Items)
-}
-
-func (ctx *e2econtext) verifyCheckResultsForSuite(
-	t *testing.T, s string, afterRemediations bool,
-) (nresults int, manualRems []string) {
-	// RuleTestResults
-	excludeList := make(map[string]int)
-	manualRemediationSet := map[string]bool{}
-	resList := &cmpv1alpha1.ComplianceCheckResultList{}
-	matchLabels := dynclient.MatchingLabels{
-		cmpv1alpha1.SuiteLabel: s,
-	}
-
-	if ctx.missingAssertions == nil {
-		ctx.missingAssertions = make(map[string]RuleTest)
-	}
-	err := ctx.dynclient.List(goctx.TODO(), resList, matchLabels)
-	if err != nil {
-		t.Fatalf("Couldn't get result list")
-	}
-	if len(resList.Items) > 0 {
-		t.Logf("Results from ComplianceSuite: %s", s)
-	} else {
-		t.Logf("There were no results for the ComplianceSuite: %s", s)
-	}
-
-	ctx.assertProfileAssertionFile(t, resList, afterRemediations)
-
-	for idx := range resList.Items {
-		check := &resList.Items[idx]
-		t.Logf("Result - Name: %s - Status: %s - Severity: %s", check.Name, check.Status, check.Severity)
-		manualRem, exclude, err := ctx.verifyRule(t, check, afterRemediations)
-		if exclude {
-			excludeList[check.Name] = 1
-			t.Logf("Excluded Rule from counting - Name: %s", check.Name)
-		}
-		if err != nil {
-			t.Error(err)
-			if errors.Is(err, errRuleAssertionMissing) {
-				if missingRuleTest, ok := ctx.missingAssertions[check.Name]; ok {
-					missingRuleTest.ResultAfterRemediation = &check.Status
-					ctx.missingAssertions[check.Name] = missingRuleTest
-				} else {
-					missingRuleTest := RuleTest{}
-					missingRuleTest.DefaultResult = &check.Status
-					ctx.missingAssertions[check.Name] = missingRuleTest
-				}
-			}
-		}
-		if manualRem != "" {
-			manualRemediationSet[manualRem] = true
-		}
-	}
-
-	manualRemediations := []string{}
-	for key := range manualRemediationSet {
-		manualRemediations = append(manualRemediations, key)
-	}
-
-	// Print any missing assertion rule entries
-	if len(ctx.missingAssertions) != 0 {
-		missingAssertionBytes, err := yaml.Marshal(ctx.missingAssertions)
-		if err != nil {
-			t.Fatalf("failed to marshal missing rule assertion entries: %s", err)
-		}
-		t.Logf("Missing rule assertion entries:\n%s", string(missingAssertionBytes))
-	}
-
-	return len(resList.Items) - len(excludeList), manualRemediations
-}
-
-func (ctx *e2econtext) summarizeSuiteFindings(t *testing.T, suite string) {
-	su := &cmpv1alpha1.ComplianceSuite{}
-	key := types.NamespacedName{Name: suite, Namespace: ctx.OperatorNamespacedName.Namespace}
-	err := ctx.dynclient.Get(goctx.TODO(), key, su)
-	if err != nil {
-		t.Fatalf("failed to get ComplianceSuite %s: %s", suite, err)
-	}
-
-	for i := range su.Spec.Scans {
-		scan := &su.Spec.Scans[i]
-		results := make(map[cmpv1alpha1.ComplianceCheckStatus]int)
-		resultList := &cmpv1alpha1.ComplianceCheckResultList{}
-		label := dynclient.MatchingLabels{cmpv1alpha1.ComplianceScanLabel: scan.Name}
-		err := ctx.dynclient.List(goctx.TODO(), resultList, label)
-		if err != nil {
-			t.Fatalf("failed to get CompliacneCheckResults for ComplianceScan %s: %s", scan.Name, err)
-		}
-		for i := range resultList.Items {
-			results[resultList.Items[i].Status]++
-		}
-		t.Logf("Scan %s contained %d total checks", scan.Name, len(resultList.Items))
-		for status, number := range results {
-			percentage := (float32(number) / float32(len(resultList.Items)) * 100)
-			t.Logf("Scan %s contained %d checks with %s status (%.2f%%)", scan.Name, number, status, percentage)
-		}
-
-		failedWithRemediationList := &cmpv1alpha1.ComplianceCheckResultList{}
-		matchLabels := dynclient.MatchingLabels{
-			cmpv1alpha1.ComplianceCheckResultStatusLabel:    string(cmpv1alpha1.CheckResultFail),
-			cmpv1alpha1.ComplianceCheckResultHasRemediation: "",
-		}
-		err = ctx.dynclient.List(goctx.TODO(), failedWithRemediationList, matchLabels)
-		if err != nil {
-			t.Fatalf("failed to get ComplianceCheckResults with status FAIL and remediations: %s", err)
-		}
-		t.Logf("Scan %s contained %d checks that failed, but have a remediation available",
-			scan.Name, len(failedWithRemediationList.Items))
-	}
-	// print out the profile assertion file if it doesn't exist
-	if !ctx.profileAssertExist && ctx.profileAssert.RuleResults != nil {
-		profileTestBytes, err := yaml.Marshal(ctx.profileAssert)
-		if err != nil {
-			t.Fatalf("failed to marshal profile assertion file: %s", err)
-		}
-		t.Logf("Profile assertion file:\n%s", string(profileTestBytes))
-	}
-}
-
-func (ctx *e2econtext) assertProfileAssertionFile(
-	t *testing.T, resultList *cmpv1alpha1.ComplianceCheckResultList, afterRemediations bool,
+// assertResultsWithFileGeneration is a consolidated function that handles both profile and scan assertions
+// It can load existing assertion files, verify results against them, and print assertion content to stdout
+// when files don't exist.
+func (ctx *e2econtext) assertResultsWithFileGeneration(
+	t *testing.T,
+	resultList *cmpv1alpha1.ComplianceCheckResultList,
+	assertionFile string,
+	afterRemediations bool,
 ) {
-	profileTestFilePath := path.Join(ctx.rootdir, "tests", "assertions", ctx.platform,
-		ctx.product+"-"+ctx.Profile+"-"+ctx.version+".yml")
-	_, err := os.Stat(profileTestFilePath)
-	if os.IsNotExist(err) {
-		t.Logf("failed to find profile assertion file %s", profileTestFilePath)
-	}
-
-	buf, err := os.ReadFile(profileTestFilePath)
-
-	// do not fail on not found, we will print out the file according to the test result
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("failed to read profile assertion file: %s", err)
-	} else if os.IsNotExist(err) {
-		t.Logf("No profile assertion file found, you should create %s to assert the test results", profileTestFilePath)
-		ctx.profileAssertExist = false
-		if ctx.profileAssert.RuleResults == nil {
-			ctx.profileAssert.RuleResults = make(map[string]RuleTest)
-		}
-		for idx := range resultList.Items {
-			check := &resultList.Items[idx]
-			ruleResult := ctx.profileAssert.RuleResults[check.Name]
-			if !afterRemediations {
-				ruleResult.DefaultResult = &check.Status
-			} else {
-				ruleResult.ResultAfterRemediation = &check.Status
-			}
-			ctx.profileAssert.RuleResults[check.Name] = ruleResult
-		}
-		return
-	}
-	ctx.profileAssertExist = true
-
-	profileTest := &RuleTestResults{}
-	if err := yaml.Unmarshal(buf, &profileTest); err != nil {
-		t.Fatalf("failed to unmarshal profile assertion file: %s", err)
-	}
-
-	ctx.profileAssert = *profileTest
-}
-
-func (ctx *e2econtext) getRuleTest(rulePath, ruleResultName, _ string) (*RuleTest, error) {
-	if ctx.profileAssertExist {
-		test, ok := ctx.profileAssert.RuleResults[ruleResultName]
-		if !ok {
-			return nil, fmt.Errorf("E2E-Error: %s: %w", ruleResultName, errRuleAssertionMissing)
-		}
-		return &test, nil
-	}
-
-	buf, err := ctx.getTestDefinition(rulePath)
+	// Try to load existing assertions
+	assertions, err := ctx.loadAssertionsFromPath(assertionFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// There's no test file, so no need to verify
-			return nil, nil
+			// File doesn't exist, print assertion content to stdout
+			t.Logf("No assertion file found, printing assertion content to stdout: %s", assertionFile)
+			ctx.generateAssertionFile(t, resultList, assertionFile, afterRemediations)
+			return
 		}
-		return nil, err
+		t.Logf("Error loading assertion file %s: %s", assertionFile, err)
+		return
 	}
 
-	test := RuleTest{}
-	if err := yaml.Unmarshal(buf, &test); err != nil {
-		return nil, err
-	}
-	return &test, nil
+	// File exists, verify results against assertions
+	ctx.verifyResultsAgainstAssertions(t, resultList, assertions, afterRemediations)
 }
 
-func (ctx *e2econtext) verifyRule(
-	t *testing.T, result *cmpv1alpha1.ComplianceCheckResult, afterRemediations bool,
-) (remediationPath string, excluded bool, err error) {
-	ruleName, err := ctx.getRuleFolderNameFromResult(result)
+// loadAssertionsFromPath loads rule assertions from a specific file path.
+func (ctx *e2econtext) loadAssertionsFromPath(filePath string) (*RuleTestResults, error) {
+	data, err := ioutil.ReadFile(filePath)
 	if err != nil {
-		return "", false, err
-	}
-	//nolint:gosec
-	rulePathBytes, err := exec.CommandContext(goctx.Background(), "find", ctx.benchmarkRoot, "-name", ruleName).Output()
-	if err != nil {
-		return "", false, err
-	}
-	ruleResultName := result.Name
-	rulePath := strings.Trim(string(rulePathBytes), "\n")
-
-	remPath := ctx.getManualRemediationPath(rulePath)
-	test, err := ctx.getRuleTest(rulePath, ruleResultName, remPath)
-	if err != nil {
-		return "", false, err
-	}
-	if test == nil {
-		// No test file found, no need to verify
-		return "", false, nil
+		return nil, err
 	}
 
-	// Initial run
-	//nolint:nestif
-	if !afterRemediations {
-		if err := verifyRuleResult(result, test.DefaultResult, *test, ruleResultName, "default"); err != nil {
-			return remPath, isExcluded(test.ExcludeFromCount), err
-		}
-	} else {
-		// after remediations
-		// If we expect a change after remediation is applied, let's test for it
-		if test.ResultAfterRemediation != nil {
-			if err := verifyRuleResult(result, test.ResultAfterRemediation, *test, ruleResultName, "remediated"); err != nil {
-				return remPath, isExcluded(test.ExcludeFromCount), err
-			}
+	var assertions RuleTestResults
+	err = yaml.Unmarshal(data, &assertions)
+	if err != nil {
+		return nil, fmt.Errorf("could not parse assertion file %s: %w", filePath, err)
+	}
+
+	return &assertions, nil
+}
+
+// generateAssertionFile prints assertion content to stdout for the current test results.
+func (ctx *e2econtext) generateAssertionFile(
+	t *testing.T,
+	resultList *cmpv1alpha1.ComplianceCheckResultList,
+	filePath string,
+	afterRemediations bool,
+) {
+	// Generate assertions from current results
+	assertions := &RuleTestResults{
+		RuleResults: make(map[string]RuleTest),
+	}
+
+	for i := range resultList.Items {
+		result := &resultList.Items[i]
+		ruleName := ctx.getRuleNameFromResult(result)
+
+		ruleTest := assertions.RuleResults[ruleName]
+		if !afterRemediations {
+			ruleTest.DefaultResult = string(result.Status)
 		} else {
-			// Check that the default didn't change
-			if err := verifyRuleResult(result, test.DefaultResult, *test, ruleResultName, "default"); err != nil {
-				return remPath, isExcluded(test.ExcludeFromCount), err
+			ruleTest.ResultAfterRemediation = string(result.Status)
+		}
+		assertions.RuleResults[ruleName] = ruleTest
+	}
+
+	// Marshal to YAML
+	data, err := yaml.Marshal(assertions)
+	if err != nil {
+		t.Logf("Failed to marshal assertion content: %s", err)
+		return
+	}
+
+	// Print to stdout instead of writing to file
+	t.Logf("=== ASSERTION FILE CONTENT FOR: %s ===", filePath)
+	fmt.Printf("%s", string(data))
+	t.Logf("=== END ASSERTION FILE CONTENT ===")
+	t.Logf("Copy the above content to create: %s", filePath)
+}
+
+// verifyResultsAgainstAssertions verifies scan results against expected assertions.
+func (ctx *e2econtext) verifyResultsAgainstAssertions(
+	t *testing.T,
+	resultList *cmpv1alpha1.ComplianceCheckResultList,
+	assertions *RuleTestResults,
+	_ bool,
+) {
+	// Create a map of results by rule name for easy lookup
+	resultMap := make(map[string]*cmpv1alpha1.ComplianceCheckResult)
+	for i := range resultList.Items {
+		result := &resultList.Items[i]
+		ruleName := ctx.getRuleNameFromResult(result)
+		resultMap[ruleName] = result
+	}
+
+	// Verify each expected assertion
+	for ruleName, expectedTest := range assertions.RuleResults {
+		result, exists := resultMap[ruleName]
+		if !exists {
+			t.Errorf("Expected rule result for %s not found in scan results", ruleName)
+			continue
+		}
+
+		// Verify default result
+		if expectedTest.DefaultResult != nil {
+			err := verifyRuleResult(result, expectedTest.DefaultResult, expectedTest, ruleName, "default")
+			if err != nil {
+				t.Errorf("Rule %s failed default result verification: %s", ruleName, err)
+			}
+		}
+
+		// Verify result after remediation if specified
+		if expectedTest.ResultAfterRemediation != nil {
+			err := verifyRuleResult(result, expectedTest.ResultAfterRemediation, expectedTest, ruleName, "after remediation")
+			if err != nil {
+				t.Errorf("Rule %s failed after remediation result verification: %s", ruleName, err)
 			}
 		}
 	}
 
-	t.Logf("Rule %s matched expected result", ruleResultName)
-	return remPath, isExcluded(test.ExcludeFromCount), err
-}
-
-// getTestDefinition attempts to use a versioned test (<version>.yml)
-// definition, if it fails it'll try to use the standard test
-// definition (e2e.yml). If that does not exist either, the function checks
-// if other files (presumably versioned tests) exist in that file and if
-// they do, it would fail. This is better than just silently ignoring the
-// files because:
-//  1. we catch rules that have versioned results but no result for the
-//     current version more easily
-//  2. with each version, this forces us to think if we can already retire
-//     certain rules
-func (ctx *e2econtext) getTestDefinition(rulePath string) ([]byte, error) {
-	versionedManifest := fmt.Sprintf("%s.yml", ctx.version)
-	versionedRuleTestFilePath := path.Join(rulePath, ruleTestDir, versionedManifest)
-	vbuf, verr := ioutil.ReadFile(versionedRuleTestFilePath)
-
-	if verr == nil {
-		return vbuf, nil
-	}
-
-	if verr != nil && !os.IsNotExist(verr) {
-		return nil, verr
-	}
-
-	// the error is now os.IsNotExist, let's try the global file
-	testFilePath := path.Join(rulePath, ruleTestFilePath)
-	gbuf, gerr := ioutil.ReadFile(testFilePath)
-	if os.IsNotExist(gerr) {
-		// let's check for other files and fail if they don't exist
-		files, err := os.ReadDir(path.Join(rulePath, ruleTestDir))
-		log.Printf("E2E-INFO: No global test file or current version test file found, "+
-			"checking for other versioned files in %s", path.Join(rulePath, ruleTestDir))
-		if err != nil {
-			return nil, err
-		}
-		if len(files) > 0 {
-			return nil, fmt.Errorf("E2E-FAILURE: the rule directory %s contains versioned files, "+
-				"but none for %s", ruleTestDir, ctx.version)
-		}
-	} else if gerr != nil {
-		return nil, gerr
-	}
-
-	return gbuf, nil
-}
-
-// getManualRemediationPath attempts to get a versioned remediation
-// (<version>-remediation.sh) path, if it fails it'll try to use the
-// standard test remediation path (e2e-remediation.sh).
-// If both instances are not present, it'll return an empty string.
-func (ctx *e2econtext) getManualRemediationPath(rulePath string) string {
-	versionedRemediation := fmt.Sprintf("%s-remediation.sh", ctx.version)
-	versionedRemediationPath := path.Join(ruleTestDir, versionedRemediation)
-	_, err := os.Stat(versionedRemediationPath)
-	if err == nil {
-		return versionedRemediationPath
-	}
-
-	remPath := path.Join(rulePath, ruleManualRemediationFilePath)
-	_, err = os.Stat(remPath)
-	if err == nil {
-		// We reset the path to return in case there isn't a remediation
-		return remPath
-	}
-	return ""
+	t.Logf("Verified %d rule results against assertions", len(assertions.RuleResults))
 }
 
 func verifyRuleResult(
@@ -1118,16 +664,6 @@ func verifyRuleResult(
 			phase, ruleName, expectedResult, foundResult.Status)
 	}
 	return nil
-}
-
-// Will exclude the rule from counting if excludedString has values.
-func isExcluded(exclude interface{}) bool {
-	if excludedString, ok := exclude.(string); ok {
-		if excludedString != "FALSE" {
-			return true
-		}
-	}
-	return false
 }
 
 func matchFoundResultToExpectation(
@@ -1167,55 +703,6 @@ func matchFoundResultToExpectation(
 	return false, fmt.Errorf("couldn't parse the result as string or map")
 }
 
-func (ctx *e2econtext) getRuleFolderNameFromResult(result *cmpv1alpha1.ComplianceCheckResult) (string, error) {
-	lbls := result.GetLabels()
-	resultName := result.Name
-	if lbls == nil {
-		return "", fmt.Errorf("ERROR: Can't derive name from rule %s since it contains no label", resultName)
-	}
-	prefix, ok := lbls[cmpv1alpha1.ComplianceScanLabel]
-	if !ok {
-		return "", fmt.Errorf("ERROR: Result %s doesn't have label with scan name", resultName)
-	}
-	if !strings.HasPrefix(resultName, prefix) {
-		return "", fmt.Errorf("ERROR: Result %s doesn't have expected prefix %s", resultName, prefix)
-	}
-	// Removes prefix plus the "-" delimiter
-	prefixRemoved := resultName[len(prefix)+1:]
-	return strings.ReplaceAll(prefixRemoved, "-", "_"), nil
-}
-
-func (ctx *e2econtext) applyManualRemediations(t *testing.T, rems []string) {
-	var wg sync.WaitGroup
-	cmdctx, cancel := goctx.WithTimeout(goctx.Background(), manualRemediationsTimeout)
-	defer cancel()
-
-	for _, rem := range rems {
-		wg.Add(1)
-		go ctx.runManualRemediation(t, cmdctx, &wg, rem)
-	}
-
-	wg.Wait()
-}
-
-func (ctx *e2econtext) runManualRemediation(t *testing.T, cmdctx goctx.Context, wg *sync.WaitGroup, rem string) {
-	defer wg.Done()
-
-	t.Logf("Running manual remediation '%s'", rem)
-	cmd := exec.CommandContext(cmdctx, rem)
-	cmd.Env = os.Environ()
-	out, err := cmd.CombinedOutput()
-
-	if errors.Is(cmdctx.Err(), goctx.DeadlineExceeded) {
-		t.Errorf("Timed out applying manual remediation script '%s': %s\nError: %s", rem, out, cmdctx.Err())
-		return
-	}
-
-	if err != nil {
-		t.Errorf("Failed applying remediation '%s': %s\n%s", rem, err, out)
-	}
-}
-
 // Reads a YAML file and returns an unstructured object from it. This object
 // can be taken into use by the dynamic client.
 func readObjFromYAMLFilePath(mpath string) (*unstructured.Unstructured, error) {
@@ -1235,4 +722,170 @@ func readObjFromYAML(r io.Reader) (*unstructured.Unstructured, error) {
 	dec := k8syaml.NewYAMLToJSONDecoder(r)
 	err := dec.Decode(obj)
 	return obj, err
+}
+
+// findAndCategorizeRules finds all Rule custom resources and categorizes them into Platform and Node rules.
+func (ctx *e2econtext) findAndCategorizeRules(t *testing.T) (platformRules, nodeRules []cmpv1alpha1.Rule) {
+	ruleList := &cmpv1alpha1.RuleList{}
+	err := ctx.dynclient.List(goctx.TODO(), ruleList)
+	if err != nil {
+		t.Fatalf("Failed to list rules: %s", err)
+	}
+
+	for i := range ruleList.Items {
+		rule := &ruleList.Items[i]
+		switch rule.CheckType {
+		case cmpv1alpha1.CheckTypePlatform:
+			platformRules = append(platformRules, *rule)
+		case cmpv1alpha1.CheckTypeNode:
+			nodeRules = append(nodeRules, *rule)
+		default:
+			t.Logf("Skipping rule %s with unknown check type: %s", rule.Name, rule.CheckType)
+		}
+	}
+
+	return platformRules, nodeRules
+}
+
+// createTailoredProfile creates a TailoredProfile with the given rules.
+func (ctx *e2econtext) createTailoredProfile(t *testing.T, name string, rules []cmpv1alpha1.Rule) {
+	ruleRefs := make([]cmpv1alpha1.RuleReferenceSpec, len(rules))
+	for i := range rules {
+		ruleRefs[i] = cmpv1alpha1.RuleReferenceSpec{
+			Name: rules[i].Name,
+		}
+	}
+
+	description := fmt.Sprintf("Tailored profile containing all %s rules", name)
+	tailoredProfile := &cmpv1alpha1.TailoredProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ctx.OperatorNamespacedName.Namespace,
+		},
+		Spec: cmpv1alpha1.TailoredProfileSpec{
+			Description: description,
+			EnableRules: ruleRefs,
+			Title:       name,
+		},
+	}
+
+	err := ctx.dynclient.Create(goctx.TODO(), tailoredProfile)
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("Failed to create %s tailored profile: %s", name, err)
+	}
+	t.Logf("Created %s tailored profile with %d rules", name, len(rules))
+}
+
+// createPlatformTailoredProfile creates a TailoredProfile with all platform rules.
+func (ctx *e2econtext) createPlatformTailoredProfile(t *testing.T) {
+	ctx.createTailoredProfile(t, "platform", ctx.platformRules)
+}
+
+// createNodeTailoredProfile creates a TailoredProfile with all node rules.
+func (ctx *e2econtext) createNodeTailoredProfile(t *testing.T) {
+	ctx.createTailoredProfile(t, "node", ctx.nodeRules)
+}
+
+// createScanBinding creates a ScanSettingBinding for the given tailored profile.
+func (ctx *e2econtext) createScanBinding(t *testing.T, bindingName, profileName string) string {
+	binding := &cmpv1alpha1.ScanSettingBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      bindingName,
+			Namespace: ctx.OperatorNamespacedName.Namespace,
+		},
+		SettingsRef: &cmpv1alpha1.NamedObjectReference{
+			APIGroup: "compliance.openshift.io/v1alpha1",
+			Kind:     "ScanSetting",
+			Name:     e2eSettingsName,
+		},
+		Profiles: []cmpv1alpha1.NamedObjectReference{
+			{
+				APIGroup: "compliance.openshift.io/v1alpha1",
+				Kind:     "TailoredProfile",
+				Name:     profileName,
+			},
+		},
+	}
+
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(apiPollInterval), 180)
+	err := backoff.RetryNotify(func() error {
+		return ctx.dynclient.Create(goctx.TODO(), binding)
+	}, bo, func(err error, d time.Duration) {
+		fmt.Printf("Couldn't create %s binding after %s: %s\n", bindingName, d.String(), err)
+	})
+	if err != nil {
+		t.Fatalf("Failed to create %s scan binding: %s", bindingName, err)
+	}
+	return binding.Name
+}
+
+// createPlatformScanBinding creates a ScanSettingBinding for the platform rules.
+func (ctx *e2econtext) createPlatformScanBinding(t *testing.T) string {
+	return ctx.createScanBinding(t, "platform-scan-binding", "platform")
+}
+
+// createNodeScanBinding creates a ScanSettingBinding for the node rules.
+func (ctx *e2econtext) createNodeScanBinding(t *testing.T) string {
+	return ctx.createScanBinding(t, "node-scan-binding", "node")
+}
+
+// verifyScanResults verifies the results of a scan against expected assertions.
+func (ctx *e2econtext) verifyScanResults(t *testing.T, suiteName, scanType string) {
+	resultList := &cmpv1alpha1.ComplianceCheckResultList{}
+	labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
+	if err != nil {
+		t.Fatalf("Failed to parse label selector: %s", err)
+	}
+	opts := &dynclient.ListOptions{
+		LabelSelector: labelSelector,
+	}
+	err = ctx.dynclient.List(goctx.TODO(), resultList, opts)
+	if err != nil {
+		t.Fatalf("Failed to get compliance check results for suite %s: %s", suiteName, err)
+	}
+
+	ctx.assertScanResults(t, resultList, scanType)
+}
+
+// verifyPlatformScanResults verifies the results of the platform scan against expected assertions.
+func (ctx *e2econtext) verifyPlatformScanResults(t *testing.T, suiteName string) {
+	ctx.verifyScanResults(t, suiteName, "platform")
+}
+
+// verifyNodeScanResults verifies the results of the node scan against expected assertions.
+func (ctx *e2econtext) verifyNodeScanResults(t *testing.T, suiteName string) {
+	ctx.verifyScanResults(t, suiteName, "node")
+}
+
+// assertScanResults verifies scan results against expected assertions from YAML files.
+func (ctx *e2econtext) assertScanResults(
+	t *testing.T,
+	resultList *cmpv1alpha1.ComplianceCheckResultList,
+	scanType string,
+) {
+	// For scan assertions, we use the simple file naming convention
+	assertionFile := fmt.Sprintf("ocp4-4.12-%s-rules.yaml", scanType)
+	ctx.assertResultsWithFileGeneration(t, resultList, assertionFile, false)
+}
+
+// getRuleNameFromResult extracts the rule name from a compliance check result.
+func (ctx *e2econtext) getRuleNameFromResult(result *cmpv1alpha1.ComplianceCheckResult) string {
+	// Try to get rule name from annotation first
+	if ruleName, exists := result.Annotations[cmpv1alpha1.ComplianceCheckResultRuleAnnotation]; exists {
+		return ruleName
+	}
+
+	// Fallback to extracting from result name
+	// Remove scan prefix and convert to rule name format
+	resultName := result.Name
+	resultLabels := result.GetLabels()
+	if prefix, exists := resultLabels[cmpv1alpha1.ComplianceScanLabel]; exists {
+		if strings.HasPrefix(resultName, prefix) {
+			// Remove prefix and convert dashes to underscores
+			ruleName := resultName[len(prefix)+1:] // +1 for the dash
+			return strings.ReplaceAll(ruleName, "-", "_")
+		}
+	}
+
+	return resultName
 }

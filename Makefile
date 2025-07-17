@@ -9,6 +9,8 @@ TEST_FLAGS?=-v -timeout 120m
 # Should the test attempt to install the operator?
 INSTALL_OPERATOR?=true
 BYPASS_REMEDIATIONS?=false
+# Type of rules to test: platform, node, or all
+TEST_TYPE?=all
 
 GOLANGCI_LINT_VERSION=latest
 BUILD_DIR := build
@@ -20,7 +22,15 @@ all: e2e
 .PHONY: e2e
 e2e: ## Run the e2e tests. This requires that the PROFILE and PRODUCT environment variables be set.
 ## idp_fix.patch is used to fix route destination cert for keycloak IdP deployment
-	set -o pipefail; go test $(TEST_FLAGS) . -platform="$(PLATFORM)" -profile="$(PROFILE)" -product="$(PRODUCT)" -content-image="$(CONTENT_IMAGE)" -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" | tee .e2e-test-results.out
+	set -o pipefail; go test $(TEST_FLAGS) . -platform="$(PLATFORM)" -profile="$(PROFILE)" -product="$(PRODUCT)" -content-image="$(CONTENT_IMAGE)" -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="$(TEST_TYPE)" | tee .e2e-test-results.out
+
+.PHONY: e2e-platform
+e2e-platform: ## Run only platform rule tests
+	$(MAKE) e2e TEST_TYPE=platform
+
+.PHONY: e2e-node
+e2e-node: ## Run only node rule tests
+	$(MAKE) e2e TEST_TYPE=node
 
 .PHONY: help
 help: ## Show this help screen
