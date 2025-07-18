@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/exec"
 	"path"
@@ -150,9 +151,21 @@ func cloneContentDir() (string, error) {
 	ctx := goctx.Background()
 	_, cmderr := exec.CommandContext(ctx, "/usr/bin/git", "clone",
 		"https://github.com/ComplianceAsCode/content.git", dir).CombinedOutput()
+	log.Printf("Created temporary directory: %s", dir)
 	if cmderr != nil {
 		return "", fmt.Errorf("couldn't clone content: %w", cmderr)
 	}
+
+	// Get and log the git SHA of the cloned repository
+	ctx = goctx.Background()
+	shaOutput, shaErr := exec.CommandContext(ctx, "/usr/bin/git", "-C", dir, "rev-parse", "HEAD").Output()
+	if shaErr != nil {
+		log.Printf("Warning: Could not get git SHA from cloned repository: %v", shaErr)
+	} else {
+		sha := strings.TrimSpace(string(shaOutput))
+		log.Printf("Cloned repository git SHA: %s", sha)
+	}
+
 	return dir, nil
 }
 
@@ -312,8 +325,14 @@ func (ctx *e2econtext) ensureObjectExists(t *testing.T, mpath string) *unstructu
 	}
 
 	err = ctx.dynclient.Create(goctx.TODO(), obj)
-	if err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("failed to create object from '%s': %s", mpath, err)
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			log.Printf("Object already exists: %s/%s (%s)", obj.GetNamespace(), obj.GetName(), obj.GetKind())
+		} else {
+			t.Fatalf("failed to create object from '%s': %s", mpath, err)
+		}
+	} else {
+		log.Printf("Successfully created object: %s/%s (%s)", obj.GetNamespace(), obj.GetName(), obj.GetKind())
 	}
 
 	return obj
