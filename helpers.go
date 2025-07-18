@@ -209,20 +209,6 @@ func (ctx *e2econtext) assertRootdir(t *testing.T) {
 	}
 }
 
-func (ctx *e2econtext) assertProfile(t *testing.T) {
-	t.Helper()
-	if ctx.Profile == "" {
-		t.Fatal("a profile must be given with the `-profile` flag")
-	}
-	_, err := os.Stat(ctx.profilepath)
-	if os.IsNotExist(err) {
-		t.Fatalf("The profile path %s points to an unexistent file", ctx.profilepath)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 func (ctx *e2econtext) assertContentImage(t *testing.T) {
 	t.Helper()
 	if ctx.ContentImage == "" {

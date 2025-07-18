@@ -8,7 +8,6 @@ func TestE2e(t *testing.T) {
 	ctx := newE2EContext(t)
 	t.Run("Parameter setup and validation", func(t *testing.T) {
 		ctx.assertRootdir(t)
-		ctx.assertProfile(t)
 		ctx.assertContentImage(t)
 		ctx.assertKubeClient(t)
 		ctx.assertVersion(t)
