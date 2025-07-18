@@ -869,7 +869,7 @@ func (ctx *e2econtext) assertScanResults(
 	scanType string,
 ) {
 	// For scan assertions, we use the simple file naming convention
-	assertionFile := fmt.Sprintf("ocp4-4.12-%s-rules.yaml", scanType)
+	assertionFile := fmt.Sprintf("%s-%s-%s-rule-assertions.yaml", ctx.platform, ctx.version, scanType)
 	ctx.assertResultsWithFileGeneration(t, resultList, assertionFile, false)
 }
 
