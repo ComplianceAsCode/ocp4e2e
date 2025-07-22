@@ -16,7 +16,7 @@ func Setup(tc *config.TestConfig) error {
 	}
 
 	// generateKubeConfig
-	c, kubeConfigErr := generateKubeConfig()
+	c, kubeConfigErr := GenerateKubeConfig()
 	if kubeConfigErr != nil {
 		return fmt.Errorf("failed to generate kube config: %w", kubeConfigErr)
 	}

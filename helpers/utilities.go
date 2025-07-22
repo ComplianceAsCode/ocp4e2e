@@ -96,8 +96,8 @@ func cloneContentDir() (string, error) {
 	return dir, nil
 }
 
-// generateKubeConfig generates a kube config and a dynamic client.
-func generateKubeConfig() (dynclient.Client, error) {
+// GenerateKubeConfig generates a kube config and a dynamic client.
+func GenerateKubeConfig() (dynclient.Client, error) {
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config: %w", err)
