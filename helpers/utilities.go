@@ -34,7 +34,6 @@ import (
 )
 
 var (
-	resourcespath          string
 	operatorNamespacedName = types.NamespacedName{Name: "compliance-operator"}
 	namespacePath          string
 	catalogSourcePath      string
@@ -127,10 +126,10 @@ func generateKubeConfig() (dynclient.Client, error) {
 }
 
 // createObject creates an object from a given path and returns it.
-func createObject(c dynclient.Client, path string) (*unstructured.Unstructured, error) {
+func createObject(c dynclient.Client, path string) error {
 	obj, err := readObjFromYAMLFilePath(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	err = c.Create(goctx.TODO(), obj)
@@ -138,13 +137,13 @@ func createObject(c dynclient.Client, path string) (*unstructured.Unstructured, 
 		if apierrors.IsAlreadyExists(err) {
 			log.Printf("Object already exists: %s/%s (%s)", obj.GetNamespace(), obj.GetName(), obj.GetKind())
 		} else {
-			return nil, err
+			return err
 		}
 	} else {
 		log.Printf("Successfully created object: %s/%s (%s)", obj.GetNamespace(), obj.GetName(), obj.GetKind())
 	}
 
-	return obj, nil
+	return nil
 }
 
 // Reads a YAML file and returns an unstructured object from it. This object
@@ -177,7 +176,7 @@ func ensureSubscriptionExists(c dynclient.Client, tc *testConfig.TestConfig) err
 	if tc.Platform == "rosa" {
 		p = rosaSubscriptionPath
 	}
-	_, err := createObject(c, p)
+	err := createObject(c, p)
 	if err != nil {
 		return fmt.Errorf("failed to create subscription: %w", err)
 	}
@@ -356,7 +355,7 @@ func setPoolRollingPolicy(c dynclient.Client) error {
 }
 
 func ensureNamespaceExists(c dynclient.Client) error {
-	_, err := createObject(c, namespacePath)
+	err := createObject(c, namespacePath)
 	if err != nil {
 		return fmt.Errorf("failed to create namespace: %w", err)
 	}
@@ -364,7 +363,7 @@ func ensureNamespaceExists(c dynclient.Client) error {
 }
 
 func ensureCatalogSourceExists(c dynclient.Client) error {
-	_, err := createObject(c, catalogSourcePath)
+	err := createObject(c, catalogSourcePath)
 	if err != nil {
 		return fmt.Errorf("failed to create catalog source: %w", err)
 	}
@@ -372,7 +371,7 @@ func ensureCatalogSourceExists(c dynclient.Client) error {
 }
 
 func ensureOperatorGroupExists(c dynclient.Client) error {
-	_, err := createObject(c, operatorGroupPath)
+	err := createObject(c, operatorGroupPath)
 	if err != nil {
 		return fmt.Errorf("failed to create operator group: %w", err)
 	}
