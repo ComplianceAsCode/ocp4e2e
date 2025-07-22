@@ -1,80 +1,138 @@
 package ocp4e2e
 
 import (
+	"flag"
+	"log"
+	"os"
 	"testing"
+
+	dynclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/ComplianceAsCode/ocp4e2e/config"
+	"github.com/ComplianceAsCode/ocp4e2e/helpers"
 )
 
-func TestE2e(t *testing.T) {
-	ctx := newE2EContext(t)
-	t.Run("Parameter setup and validation", func(t *testing.T) {
-		ctx.assertRootdir(t)
-		ctx.assertContentImage(t)
-		ctx.assertKubeClient(t)
-		ctx.assertVersion(t)
-	})
+var testContext *e2econtext
 
-	t.Run("Operator setup", func(t *testing.T) {
-		ctx.ensureNamespaceExistsAndSet(t)
-		if ctx.installOperator {
-			ctx.ensureCatalogSourceExists(t)
-			ctx.ensureOperatorGroupExists(t)
-			ctx.ensureSubscriptionExists(t)
-			ctx.waitForOperatorToBeReady(t)
-		} else {
-			t.Logf("Skipping operator install as requested")
-		}
-	})
-	if t.Failed() {
-		return
+// TestMain handles the setup and teardown for all tests.
+func TestMain(m *testing.M) {
+	// Define flags
+	config.DefineFlags()
+
+	flag.Parse()
+
+	// Validate required flags
+	if err := config.ValidateFlags(); err != nil {
+		log.Printf("Flag validation failed: %v", err)
+		os.Exit(1)
 	}
 
-	t.Run("Prereqs setup", func(t *testing.T) {
-		ctx.ensureTestProfileBundle(t)
-		ctx.waitForValidTestProfileBundle(t)
-		ctx.ensureTestSettings(t)
-		if err := ctx.setPoolRollingPolicy(t); err != nil {
-			t.Fatalf("failed to set pool rolling policy: %s", err)
-		}
-	})
+	tc := config.NewTestConfig()
+	// Setup phase
+	err := helpers.Setup(tc)
+	if err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
 
-	t.Run("Find and categorize rules", func(t *testing.T) {
-		platformRules, nodeRules := ctx.findAndCategorizeRules(t)
-		t.Logf("Found %d platform rules and %d node rules", len(platformRules), len(nodeRules))
+	// Run tests
+	testResult := m.Run()
 
-		// Store rules in context for later use
-		ctx.platformRules = platformRules
-		ctx.nodeRules = nodeRules
-	})
+	// Teardown phase
+	err = helpers.Teardown(tc)
+	if err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
 
+	// Exit with test result
+	os.Exit(testResult)
+}
+
+func TestE2e(t *testing.T) {
 	// Determine which tests to run based on testType
-	runPlatformTests := ctx.testType == "platform" || ctx.testType == "all"
-	runNodeTests := ctx.testType == "node" || ctx.testType == "all"
+	runPlatformTests := testContext.testType == "platform" || testContext.testType == "all"
+	runNodeTests := testContext.testType == "node" || testContext.testType == "all"
+
+	tc := config.NewTestConfig()
+	c, err := helpers.GenerateKubeConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate kube config: %s", err)
+	}
 
 	if runPlatformTests {
-		t.Run("Create platform tailored profile", func(t *testing.T) {
-			ctx.createPlatformTailoredProfile(t)
-		})
-
-		t.Run("Create scan setting binding and run platform scan", func(t *testing.T) {
-			suiteName := ctx.createPlatformScanBinding(t)
-			ctx.waitForComplianceSuite(t, suiteName)
-			ctx.verifyPlatformScanResults(t, suiteName)
-		})
+		t.Run("Platform compliance tests", runPlatformComplianceTests(tc, c))
 	}
 
 	if runNodeTests {
-		t.Run("Create node tailored profile", func(t *testing.T) {
-			ctx.createNodeTailoredProfile(t)
-		})
-
-		t.Run("Create scan setting binding and run node scan", func(t *testing.T) {
-			suiteName := ctx.createNodeScanBinding(t)
-			ctx.waitForComplianceSuite(t, suiteName)
-			ctx.verifyNodeScanResults(t, suiteName)
-		})
+		t.Run("Node compliance tests", runNodeComplianceTests(tc, c))
 	}
 
 	if !runPlatformTests && !runNodeTests {
-		t.Fatalf("Invalid test-type: %s. Must be 'platform', 'node', or 'all'", ctx.testType)
+		t.Fatalf("Invalid test-type: %s. Must be 'platform', 'node', or 'all'", testContext.testType)
+	}
+}
+
+func runPlatformComplianceTests(tc *config.TestConfig, c dynclient.Client) func(*testing.T) {
+	return func(t *testing.T) {
+		// Create platform tailored profile
+		err := helpers.CreatePlatformTailoredProfile(tc, c)
+		if err != nil {
+			t.Fatalf("Failed to create platform tailored profile: %s", err)
+		}
+
+		// Create scan setting binding and run platform scan
+		err = helpers.CreatePlatformScanBinding(tc, c)
+		if err != nil {
+			t.Fatalf("Failed to create platform scan binding: %s", err)
+		}
+
+		platformBindingName := "platform-scan-binding"
+		platformBindingErr := helpers.CreatePlatformScanBinding(tc, c)
+		if platformBindingErr != nil {
+			t.Fatalf("Failed to create %s scan binding: %s", platformBindingName, platformBindingErr)
+		}
+
+		err = helpers.WaitForComplianceSuite(tc, c, platformBindingName)
+		if err != nil {
+			t.Fatalf("Failed to wait for compliance suite: %s", err)
+		}
+
+		err = helpers.VerifyPlatformScanResults(tc, c, platformBindingName)
+		if err != nil {
+			t.Fatalf("Failed to verify platform scan results: %s", err)
+		}
+	}
+}
+
+func runNodeComplianceTests(tc *config.TestConfig, c dynclient.Client) func(*testing.T) {
+	return func(t *testing.T) {
+		// Create node tailored profile
+		err := helpers.CreateNodeTailoredProfile(tc, c)
+		if err != nil {
+			t.Fatalf("Failed to create node tailored profile: %s", err)
+		}
+
+		// Create scan setting binding and run node scan
+		err = helpers.CreateNodeScanBinding(tc, c)
+		if err != nil {
+			t.Fatalf("Failed to create node scan binding: %s", err)
+		}
+
+		nodeBindingName := "node-scan-binding"
+		nodeBindingErr := helpers.CreateNodeScanBinding(tc, c)
+		if nodeBindingErr != nil {
+			t.Fatalf("Failed to create %s scan binding: %s", nodeBindingName, nodeBindingErr)
+		}
+
+		err = helpers.WaitForComplianceSuite(tc, c, nodeBindingName)
+		if err != nil {
+			t.Fatalf("Failed to wait for compliance suite: %s", err)
+		}
+
+		err = helpers.VerifyNodeScanResults(tc, c, nodeBindingName)
+		if err != nil {
+			t.Fatalf("Failed to verify node scan results: %s", err)
+		}
 	}
 }
