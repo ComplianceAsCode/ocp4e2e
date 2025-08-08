@@ -50,13 +50,13 @@ func Setup(tc *config.TestConfig) error {
 }
 
 func installOperator(c dynclient.Client, tc *config.TestConfig) error {
-	if err := ensureNamespaceExists(c); err != nil {
+	if err := ensureNamespaceExists(c, tc); err != nil {
 		return err
 	}
-	if err := ensureCatalogSourceExists(c); err != nil {
+	if err := ensureCatalogSourceExists(c, tc); err != nil {
 		return err
 	}
-	if err := ensureOperatorGroupExists(c); err != nil {
+	if err := ensureOperatorGroupExists(c, tc); err != nil {
 		return err
 	}
 	if err := ensureSubscriptionExists(c, tc); err != nil {

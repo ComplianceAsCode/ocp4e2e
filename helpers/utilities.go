@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"strings"
 	"time"
 
@@ -37,12 +38,13 @@ import (
 )
 
 var (
-	operatorNamespacedName = types.NamespacedName{Name: "compliance-operator"}
-	namespacePath          string
-	catalogSourcePath      string
-	operatorGroupPath      string
-	rosaSubscriptionPath   string
-	subscriptionPath       string
+	operatorNamespacedName   = types.NamespacedName{Name: "compliance-operator"}
+	resourcesPath            = "ocp-resources"
+	namespaceFileName        = "compliance-operator-ns.yaml"
+	catalogSourceFileName    = "compliance-operator-catalog-source.yaml"
+	operatorGroupFileName    = "compliance-operator-operator-group.yaml"
+	rosaSubscriptionFileName = "compliance-operator-rosa-subscription.yaml"
+	subscriptionFileName     = "compliance-operator-alpha-subscription.yaml"
 )
 
 // RuleTest is the definition of the structure rule-specific e2e tests should have.
@@ -141,8 +143,8 @@ func GenerateKubeConfig() (dynclient.Client, error) {
 }
 
 // createObject creates an object from a given path and returns it.
-func createObject(c dynclient.Client, path string) error {
-	obj, err := readObjFromYAMLFilePath(path)
+func createObject(c dynclient.Client, p string) error {
+	obj, err := readObjFromYAMLFilePath(p)
 	if err != nil {
 		return err
 	}
@@ -183,14 +185,15 @@ func readObjFromYAML(r io.Reader) (*unstructured.Unstructured, error) {
 }
 
 func ensureSubscriptionExists(c dynclient.Client, tc *testConfig.TestConfig) error {
-	p := subscriptionPath
+	s := subscriptionFileName
 	// We need to modify the default deployment through the subscription if
 	// we're dealing with a ROSA cluster because we only have worker nodes
 	// available to run the operator. If we don't do this, the deployment
 	// will spin waiting for master nodes to schedule the operator on.
 	if tc.Platform == "rosa" {
-		p = rosaSubscriptionPath
+		s = rosaSubscriptionFileName
 	}
+	p := path.Join(tc.ContentDir, resourcesPath, s)
 	err := createObject(c, p)
 	if err != nil {
 		return fmt.Errorf("failed to create subscription: %w", err)
@@ -369,24 +372,27 @@ func setPoolRollingPolicy(c dynclient.Client) error {
 	return nil
 }
 
-func ensureNamespaceExists(c dynclient.Client) error {
-	err := createObject(c, namespacePath)
+func ensureNamespaceExists(c dynclient.Client, tc *testConfig.TestConfig) error {
+	n := path.Join(tc.ContentDir, resourcesPath, namespaceFileName)
+	err := createObject(c, n)
 	if err != nil {
 		return fmt.Errorf("failed to create namespace: %w", err)
 	}
 	return nil
 }
 
-func ensureCatalogSourceExists(c dynclient.Client) error {
-	err := createObject(c, catalogSourcePath)
+func ensureCatalogSourceExists(c dynclient.Client, tc *testConfig.TestConfig) error {
+	cs := path.Join(tc.ContentDir, resourcesPath, catalogSourceFileName)
+	err := createObject(c, cs)
 	if err != nil {
 		return fmt.Errorf("failed to create catalog source: %w", err)
 	}
 	return nil
 }
 
-func ensureOperatorGroupExists(c dynclient.Client) error {
-	err := createObject(c, operatorGroupPath)
+func ensureOperatorGroupExists(c dynclient.Client, tc *testConfig.TestConfig) error {
+	o := path.Join(tc.ContentDir, resourcesPath, operatorGroupFileName)
+	err := createObject(c, o)
 	if err != nil {
 		return fmt.Errorf("failed to create operator group: %w", err)
 	}
