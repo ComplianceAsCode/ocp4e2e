@@ -82,11 +82,6 @@ func runPlatformComplianceTests(tc *config.TestConfig, c dynclient.Client) func(
 		}
 
 		// Create scan setting binding and run platform scan
-		err = helpers.CreatePlatformScanBinding(tc, c)
-		if err != nil {
-			t.Fatalf("Failed to create platform scan binding: %s", err)
-		}
-
 		platformBindingName := "platform-scan-binding"
 		platformBindingErr := helpers.CreatePlatformScanBinding(tc, c)
 		if platformBindingErr != nil {
@@ -114,11 +109,6 @@ func runNodeComplianceTests(tc *config.TestConfig, c dynclient.Client) func(*tes
 		}
 
 		// Create scan setting binding and run node scan
-		err = helpers.CreateNodeScanBinding(tc, c)
-		if err != nil {
-			t.Fatalf("Failed to create node scan binding: %s", err)
-		}
-
 		nodeBindingName := "node-scan-binding"
 		nodeBindingErr := helpers.CreateNodeScanBinding(tc, c)
 		if nodeBindingErr != nil {
