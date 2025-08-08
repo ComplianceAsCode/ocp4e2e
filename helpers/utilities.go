@@ -702,7 +702,11 @@ func verifyResultsAgainstAssertions(
 		}
 	}
 
-	log.Printf("Verified %d rule results against assertions", len(assertions.RuleResults))
+	log.Printf(
+		"Verified %d rule results against assertions (total rules in results: %d)",
+		len(assertions.RuleResults),
+		len(resultList.Items),
+	)
 }
 
 // getRuleNameFromResult extracts the rule name from a compliance check result.
@@ -816,5 +820,10 @@ func generateAssertionFile(
 	fmt.Printf("%s", string(data))
 	log.Printf("=== END ASSERTION FILE CONTENT ===")
 	log.Printf("Copy the above content to create: %s", filePath)
+	log.Printf(
+		"Generated assertions for %d rules (total rules in results: %d)",
+		len(assertions.RuleResults),
+		len(resultList.Items),
+	)
 	return nil
 }
