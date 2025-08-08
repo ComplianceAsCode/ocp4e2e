@@ -10,7 +10,7 @@ TEST_FLAGS?=-v -timeout 120m
 INSTALL_OPERATOR?=true
 BYPASS_REMEDIATIONS?=false
 
-GOLANGCI_LINT_VERSION = v1.40.1
+GOLANGCI_LINT_VERSION=latest
 BUILD_DIR := build
 PLATFORM?=ocp
 
@@ -44,7 +44,7 @@ $(BUILD_DIR)/golangci-lint: $(BUILD_DIR)
 		VERSION=$(GOLANGCI_LINT_VERSION) \
 		URL=https://raw.githubusercontent.com/golangci/golangci-lint \
 		BINDIR=$(BUILD_DIR) && \
-	curl -sfL $$URL/$$VERSION/install.sh | sh -s $$VERSION
+	curl -sfL $$URL/HEAD/install.sh | sh -s $$VERSION
 	$(BUILD_DIR)/golangci-lint version
 	$(BUILD_DIR)/golangci-lint linters
 
