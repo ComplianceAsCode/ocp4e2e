@@ -443,7 +443,7 @@ func createTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client, name s
 
 // CreatePlatformTailoredProfile creates a TailoredProfile with all platform rules.
 func CreatePlatformTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client) error {
-	platformRules, err := findPlatformRules(c)
+	platformRules, err := findPlatformRules(c, tc)
 	if err != nil {
 		return fmt.Errorf("failed to find platform rules: %w", err)
 	}
@@ -452,7 +452,7 @@ func CreatePlatformTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client
 
 // CreateNodeTailoredProfile creates a TailoredProfile with all node rules.
 func CreateNodeTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client) error {
-	nodeRules, err := findNodeRules(tc, c)
+	nodeRules, err := findNodeRules(c, tc)
 	if err != nil {
 		return fmt.Errorf("failed to find node rules: %w", err)
 	}
@@ -460,7 +460,7 @@ func CreateNodeTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client) er
 }
 
 // findPlatformRules finds all Rule custom resources of type Platform and returns them.
-func findPlatformRules(c dynclient.Client) ([]cmpv1alpha1.Rule, error) {
+func findPlatformRules(c dynclient.Client, tc *testConfig.TestConfig) ([]cmpv1alpha1.Rule, error) {
 	ruleList := &cmpv1alpha1.RuleList{}
 	err := c.List(goctx.TODO(), ruleList)
 	if err != nil {
@@ -470,15 +470,19 @@ func findPlatformRules(c dynclient.Client) ([]cmpv1alpha1.Rule, error) {
 	var platformRules []cmpv1alpha1.Rule
 
 	for i := range ruleList.Items {
-		if ruleList.Items[i].CheckType == cmpv1alpha1.CheckTypePlatform {
-			platformRules = append(platformRules, ruleList.Items[i])
+		// Only include rules from the e2e profile bundle
+		bundleName, exists := ruleList.Items[i].Labels["compliance.openshift.io/profile-bundle"]
+		if exists && bundleName == tc.OpenShiftBundleName {
+			if ruleList.Items[i].CheckType == cmpv1alpha1.CheckTypePlatform {
+				platformRules = append(platformRules, ruleList.Items[i])
+			}
 		}
 	}
 	return platformRules, nil
 }
 
 // findNodeRules finds all Rule custom resources of type Node and returns them.
-func findNodeRules(tc *testConfig.TestConfig, c dynclient.Client) ([]cmpv1alpha1.Rule, error) {
+func findNodeRules(c dynclient.Client, tc *testConfig.TestConfig) ([]cmpv1alpha1.Rule, error) {
 	ruleList := &cmpv1alpha1.RuleList{}
 	err := c.List(goctx.TODO(), ruleList)
 	if err != nil {
