@@ -38,7 +38,6 @@ import (
 )
 
 var (
-	operatorNamespacedName   = types.NamespacedName{Name: "compliance-operator"}
 	resourcesPath            = "ocp-resources"
 	namespaceFileName        = "compliance-operator-ns.yaml"
 	catalogSourceFileName    = "compliance-operator-catalog-source.yaml"
@@ -310,7 +309,7 @@ func waitForValidTestProfileBundles(c dynclient.Client, tc *testConfig.TestConfi
 func ensureTestSettings(c dynclient.Client, tc *testConfig.TestConfig) error {
 	defaultkey := types.NamespacedName{
 		Name:      "default",
-		Namespace: operatorNamespacedName.Namespace,
+		Namespace: tc.OperatorNamespace.Namespace,
 	}
 	defaultSettings := &cmpv1alpha1.ScanSetting{}
 
@@ -328,13 +327,13 @@ func ensureTestSettings(c dynclient.Client, tc *testConfig.TestConfig) error {
 	// Ensure auto-apply
 	key := types.NamespacedName{
 		Name:      tc.E2eSettings,
-		Namespace: operatorNamespacedName.Namespace,
+		Namespace: tc.OperatorNamespace.Namespace,
 	}
 	autoApplySettings := defaultSettings.DeepCopy()
 	// Delete Object Meta so we reset unwanted references
 	autoApplySettings.ObjectMeta = metav1.ObjectMeta{
 		Name:      tc.E2eSettings,
-		Namespace: operatorNamespacedName.Namespace,
+		Namespace: tc.OperatorNamespace.Namespace,
 	}
 	if !tc.BypassRemediations {
 		autoApplySettings.AutoApplyRemediations = true
