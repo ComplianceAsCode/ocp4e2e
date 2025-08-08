@@ -3,7 +3,7 @@ PROFILE?=
 # Since we already have test for RHCOS4, this is the default for now.
 PRODUCT?=rhcos4
 PLATFORM?=ocp4
-CONTENT_IMAGE?=ghcr.io/complianceascode/k8scontent:latest
+CONTENT_IMAGE?=quay.io/redhat-user-workloads/ocp-isc-tenant/compliance-operator-content-dev:master
 ROOT_DIR?=
 TEST_FLAGS?=-v -timeout 120m
 # Should the test attempt to install the operator?
