@@ -28,12 +28,11 @@ func Setup(tc *config.TestConfig) error {
 		}
 	}
 
-	// ensureTestProfileBundle
-	if err := ensureTestProfileBundle(c, tc); err != nil {
+	if err := ensureTestProfileBundles(c, tc); err != nil {
 		return err
 	}
 
-	if err := waitForValidTestProfileBundle(c, tc); err != nil {
+	if err := waitForValidTestProfileBundles(c, tc); err != nil {
 		return err
 	}
 

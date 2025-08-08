@@ -206,7 +206,7 @@ func waitForOperatorToBeReady(c dynclient.Client, tc *testConfig.TestConfig) err
 
 	retryFunc := func() error {
 		od := &appsv1.Deployment{}
-		err := c.Get(goctx.TODO(), operatorNamespacedName, od)
+		err := c.Get(goctx.TODO(), tc.OperatorNamespace, od)
 		if err != nil {
 			return fmt.Errorf("getting deployment: %w", err)
 		}
@@ -232,64 +232,77 @@ func waitForOperatorToBeReady(c dynclient.Client, tc *testConfig.TestConfig) err
 	return nil
 }
 
-func ensureTestProfileBundle(c dynclient.Client, tc *testConfig.TestConfig) error {
-	key := types.NamespacedName{
-		Name:      tc.TestProfileBundleName,
-		Namespace: operatorNamespacedName.Namespace,
-	}
-	pb := &cmpv1alpha1.ProfileBundle{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      tc.TestProfileBundleName,
-			Namespace: operatorNamespacedName.Namespace,
-		},
-		Spec: cmpv1alpha1.ProfileBundleSpec{
-			ContentImage: tc.ContentImage,
-			ContentFile:  fmt.Sprintf("ssg-%s-ds.xml", tc.Product),
-		},
+func ensureTestProfileBundles(c dynclient.Client, tc *testConfig.TestConfig) error {
+	bundles := map[string]string{
+		tc.OpenShiftBundleName: "ocp4",
+		tc.RHCOSBundleName:     "rhcos4",
 	}
 
-	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 180)
-	err := backoff.RetryNotify(func() error {
-		found := &cmpv1alpha1.ProfileBundle{}
-		if err := c.Get(goctx.TODO(), key, found); err != nil {
-			if apierrors.IsNotFound(err) {
-				return c.Create(goctx.TODO(), pb)
-			}
-			return err
+	for bundleName, product := range bundles {
+		key := types.NamespacedName{
+			Name:      bundleName,
+			Namespace: tc.OperatorNamespace.Namespace,
 		}
-		// Update the spec in case it differs
-		found.Spec = pb.Spec
-		return c.Update(goctx.TODO(), found)
-	}, bo, func(err error, d time.Duration) {
-		log.Printf("Still waiting for test profile bundle to be created after %s: %s", d.String(), err)
-	})
-	if err != nil {
-		return fmt.Errorf("failed to ensure test profile bundle exists: %w", err)
+		pb := &cmpv1alpha1.ProfileBundle{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      bundleName,
+				Namespace: tc.OperatorNamespace.Namespace,
+			},
+			Spec: cmpv1alpha1.ProfileBundleSpec{
+				ContentImage: tc.ContentImage,
+				ContentFile:  fmt.Sprintf("ssg-%s-ds.xml", product),
+			},
+		}
+
+		bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 180)
+		err := backoff.RetryNotify(func() error {
+			found := &cmpv1alpha1.ProfileBundle{}
+			if err := c.Get(goctx.TODO(), key, found); err != nil {
+				if apierrors.IsNotFound(err) {
+					return c.Create(goctx.TODO(), pb)
+				}
+				return err
+			}
+			// Update the spec in case it differs
+			found.Spec = pb.Spec
+			return c.Update(goctx.TODO(), found)
+		}, bo, func(err error, d time.Duration) {
+			log.Printf("Still waiting for test profile bundle %s to be created after %s: %s", bundleName, d.String(), err)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to ensure test profile bundle %s exists: %w", bundleName, err)
+		}
+		log.Printf("ProfileBundle %s created/updated successfully", bundleName)
 	}
 	return nil
 }
 
-func waitForValidTestProfileBundle(c dynclient.Client, tc *testConfig.TestConfig) error {
-	key := types.NamespacedName{
-		Name:      tc.TestProfileBundleName,
-		Namespace: operatorNamespacedName.Namespace,
-	}
+func waitForValidTestProfileBundles(c dynclient.Client, tc *testConfig.TestConfig) error {
+	bundleNames := []string{tc.OpenShiftBundleName, tc.RHCOSBundleName}
 
-	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 180)
-	err := backoff.RetryNotify(func() error {
-		found := &cmpv1alpha1.ProfileBundle{}
-		if err := c.Get(goctx.TODO(), key, found); err != nil {
-			return err
+	for _, bundleName := range bundleNames {
+		key := types.NamespacedName{
+			Name:      bundleName,
+			Namespace: tc.OperatorNamespace.Namespace,
 		}
-		if found.Status.DataStreamStatus != cmpv1alpha1.DataStreamValid {
-			return fmt.Errorf("%s ProfileBundle is in %s state", found.Name, found.Status.DataStreamStatus)
+
+		bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 180)
+		err := backoff.RetryNotify(func() error {
+			found := &cmpv1alpha1.ProfileBundle{}
+			if err := c.Get(goctx.TODO(), key, found); err != nil {
+				return err
+			}
+			if found.Status.DataStreamStatus != cmpv1alpha1.DataStreamValid {
+				return fmt.Errorf("%s ProfileBundle is in %s state", found.Name, found.Status.DataStreamStatus)
+			}
+			return nil
+		}, bo, func(err error, _ time.Duration) {
+			log.Printf("waiting for ProfileBundle %s to parse: %s", bundleName, err)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to ensure test ProfileBundle %s: %w", bundleName, err)
 		}
-		return nil
-	}, bo, func(err error, _ time.Duration) {
-		log.Printf("waiting for ProfileBundle to parse: %s", err)
-	})
-	if err != nil {
-		return fmt.Errorf("failed to ensure test PB: %w", err)
+		log.Printf("ProfileBundle %s is valid", bundleName)
 	}
 	return nil
 }
@@ -440,7 +453,7 @@ func CreatePlatformTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client
 
 // CreateNodeTailoredProfile creates a TailoredProfile with all node rules.
 func CreateNodeTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client) error {
-	nodeRules, err := findNodeRules(c)
+	nodeRules, err := findNodeRules(tc, c)
 	if err != nil {
 		return fmt.Errorf("failed to find node rules: %w", err)
 	}
@@ -466,7 +479,7 @@ func findPlatformRules(c dynclient.Client) ([]cmpv1alpha1.Rule, error) {
 }
 
 // findNodeRules finds all Rule custom resources of type Node and returns them.
-func findNodeRules(c dynclient.Client) ([]cmpv1alpha1.Rule, error) {
+func findNodeRules(tc *testConfig.TestConfig, c dynclient.Client) ([]cmpv1alpha1.Rule, error) {
 	ruleList := &cmpv1alpha1.RuleList{}
 	err := c.List(goctx.TODO(), ruleList)
 	if err != nil {
@@ -476,11 +489,14 @@ func findNodeRules(c dynclient.Client) ([]cmpv1alpha1.Rule, error) {
 	var nodeRules []cmpv1alpha1.Rule
 
 	for i := range ruleList.Items {
-		if ruleList.Items[i].CheckType == cmpv1alpha1.CheckTypeNode {
-			nodeRules = append(nodeRules, ruleList.Items[i])
+		// Only include rules from the e2e profile bundle
+		bundleName, exists := ruleList.Items[i].Labels["compliance.openshift.io/profile-bundle"]
+		if exists && bundleName == tc.OpenShiftBundleName || exists && bundleName == tc.RHCOSBundleName {
+			if ruleList.Items[i].CheckType == cmpv1alpha1.CheckTypePlatform {
+				nodeRules = append(nodeRules, ruleList.Items[i])
+			}
 		}
 	}
-
 	return nodeRules, nil
 }
 
