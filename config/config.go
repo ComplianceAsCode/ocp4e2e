@@ -61,7 +61,7 @@ func NewTestConfig() *TestConfig {
 		InstallOperator:       installOperator,
 		BypassRemediations:    bypassRemediations,
 		TestType:              testType,
-		OperatorNamespace:     types.NamespacedName{Name: "compliance-operator"},
+		OperatorNamespace:     types.NamespacedName{Name: "compliance-operator", Namespace: "openshift-compliance"},
 		Version:               version,
 	}
 }
