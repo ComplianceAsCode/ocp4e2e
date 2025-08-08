@@ -12,8 +12,6 @@ import (
 	"github.com/ComplianceAsCode/ocp4e2e/helpers"
 )
 
-var testContext *e2econtext
-
 // TestMain handles the setup and teardown for all tests.
 func TestMain(m *testing.M) {
 	// Define flags
@@ -50,11 +48,12 @@ func TestMain(m *testing.M) {
 }
 
 func TestE2e(t *testing.T) {
-	// Determine which tests to run based on testType
-	runPlatformTests := testContext.testType == "platform" || testContext.testType == "all"
-	runNodeTests := testContext.testType == "node" || testContext.testType == "all"
-
 	tc := config.NewTestConfig()
+
+	// Determine which tests to run based on testType
+	runPlatformTests := tc.TestType == "platform" || tc.TestType == "all"
+	runNodeTests := tc.TestType == "node" || tc.TestType == "all"
+
 	c, err := helpers.GenerateKubeConfig()
 	if err != nil {
 		t.Fatalf("Failed to generate kube config: %s", err)
@@ -69,7 +68,7 @@ func TestE2e(t *testing.T) {
 	}
 
 	if !runPlatformTests && !runNodeTests {
-		t.Fatalf("Invalid test-type: %s. Must be 'platform', 'node', or 'all'", testContext.testType)
+		t.Fatalf("Invalid test-type: %s. Must be 'platform', 'node', or 'all'", tc.TestType)
 	}
 }
 
