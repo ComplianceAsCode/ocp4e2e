@@ -18,6 +18,8 @@ type TestConfig struct {
 	APIPollInterval       time.Duration
 	E2eSettings           string
 	TestProfileBundleName string
+	OpenShiftBundleName   string
+	RHCOSBundleName       string
 	Profile               string
 	Product               string
 	Platform              string
@@ -53,6 +55,8 @@ func NewTestConfig() *TestConfig {
 		APIPollInterval:       5 * time.Second,
 		E2eSettings:           "e2e-debug",
 		TestProfileBundleName: "e2e",
+		OpenShiftBundleName:   "e2e-ocp4",
+		RHCOSBundleName:       "e2e-rhcos4",
 		Profile:               profile,
 		Product:               product,
 		Platform:              platform,
