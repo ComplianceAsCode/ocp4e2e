@@ -420,11 +420,24 @@ func createTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client, name s
 		}
 	}
 
+	// Determine product type based on the first rule's check type so we
+	// can set the profile's product-type appropriately
+	annotations := make(map[string]string)
+	if len(rules) > 0 {
+		switch rules[0].CheckType {
+		case cmpv1alpha1.CheckTypeNode:
+			annotations["compliance.openshift.io/product-type"] = "Node"
+		case cmpv1alpha1.CheckTypePlatform:
+			annotations["compliance.openshift.io/product-type"] = "Platform"
+		}
+	}
+
 	description := fmt.Sprintf("Tailored profile containing all %s rules", name)
 	tailoredProfile := &cmpv1alpha1.TailoredProfile{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: tc.OperatorNamespace.Namespace,
+			Name:        name,
+			Namespace:   tc.OperatorNamespace.Namespace,
+			Annotations: annotations,
 		},
 		Spec: cmpv1alpha1.TailoredProfileSpec{
 			Description: description,
@@ -450,13 +463,36 @@ func CreatePlatformTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client
 	return createTailoredProfile(tc, c, "platform", platformRules)
 }
 
-// CreateNodeTailoredProfile creates a TailoredProfile with all node rules.
+// CreateNodeTailoredProfile creates two TailoredProfiles: one for OpenShift
+// node rules and one for RHCOS node rules. We need to create two separate
+// tailored profiles because a profile cannot have rules from multiple
+// products.
 func CreateNodeTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client) error {
-	nodeRules, err := findNodeRules(c, tc)
+	ocpNodeRules, err := findNodeRulesByBundle(c, tc.OpenShiftBundleName)
 	if err != nil {
-		return fmt.Errorf("failed to find node rules: %w", err)
+		return fmt.Errorf("failed to find OpenShift node rules: %w", err)
 	}
-	return createTailoredProfile(tc, c, "node", nodeRules)
+
+	rhcosNodeRules, err := findNodeRulesByBundle(c, tc.RHCOSBundleName)
+	if err != nil {
+		return fmt.Errorf("failed to find RHCOS node rules: %w", err)
+	}
+
+	if len(ocpNodeRules) > 0 {
+		err = createTailoredProfile(tc, c, "ocp-node", ocpNodeRules)
+		if err != nil {
+			return fmt.Errorf("failed to create OpenShift node tailored profile: %w", err)
+		}
+	}
+
+	if len(rhcosNodeRules) > 0 {
+		err = createTailoredProfile(tc, c, "rhcos-node", rhcosNodeRules)
+		if err != nil {
+			return fmt.Errorf("failed to create RHCOS node tailored profile: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // findPlatformRules finds all Rule custom resources of type Platform and returns them.
@@ -481,8 +517,8 @@ func findPlatformRules(c dynclient.Client, tc *testConfig.TestConfig) ([]cmpv1al
 	return platformRules, nil
 }
 
-// findNodeRules finds all Rule custom resources of type Node and returns them.
-func findNodeRules(c dynclient.Client, tc *testConfig.TestConfig) ([]cmpv1alpha1.Rule, error) {
+// findNodeRulesByBundle finds all Node rules from a specific bundle.
+func findNodeRulesByBundle(c dynclient.Client, bundleName string) ([]cmpv1alpha1.Rule, error) {
 	ruleList := &cmpv1alpha1.RuleList{}
 	err := c.List(goctx.TODO(), ruleList)
 	if err != nil {
@@ -492,10 +528,10 @@ func findNodeRules(c dynclient.Client, tc *testConfig.TestConfig) ([]cmpv1alpha1
 	var nodeRules []cmpv1alpha1.Rule
 
 	for i := range ruleList.Items {
-		// Only include rules from the e2e profile bundle
-		bundleName, exists := ruleList.Items[i].Labels["compliance.openshift.io/profile-bundle"]
-		if exists && bundleName == tc.OpenShiftBundleName || exists && bundleName == tc.RHCOSBundleName {
-			if ruleList.Items[i].CheckType == cmpv1alpha1.CheckTypePlatform {
+		// Only include rules from the specified profile bundle
+		ruleBundleName, exists := ruleList.Items[i].Labels["compliance.openshift.io/profile-bundle"]
+		if exists && ruleBundleName == bundleName {
+			if ruleList.Items[i].CheckType == cmpv1alpha1.CheckTypeNode {
 				nodeRules = append(nodeRules, ruleList.Items[i])
 			}
 		}
@@ -541,9 +577,43 @@ func CreatePlatformScanBinding(tc *testConfig.TestConfig, c dynclient.Client) er
 	return createScanBinding(c, tc, "platform-scan-binding", "platform")
 }
 
-// CreateNodeScanBinding creates a ScanSettingBinding for the node rules.
+// CreateNodeScanBinding creates a ScanSettingBinding for the node rules using
+// both tailored profiles.
 func CreateNodeScanBinding(tc *testConfig.TestConfig, c dynclient.Client) error {
-	return createScanBinding(c, tc, "node-scan-binding", "node")
+	binding := &cmpv1alpha1.ScanSettingBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "node-scan-binding",
+			Namespace: tc.OperatorNamespace.Namespace,
+		},
+		SettingsRef: &cmpv1alpha1.NamedObjectReference{
+			APIGroup: "compliance.openshift.io/v1alpha1",
+			Kind:     "ScanSetting",
+			Name:     tc.E2eSettings,
+		},
+		Profiles: []cmpv1alpha1.NamedObjectReference{
+			{
+				APIGroup: "compliance.openshift.io/v1alpha1",
+				Kind:     "TailoredProfile",
+				Name:     "ocp-node",
+			},
+			{
+				APIGroup: "compliance.openshift.io/v1alpha1",
+				Kind:     "TailoredProfile",
+				Name:     "rhcos-node",
+			},
+		},
+	}
+
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 180)
+	err := backoff.RetryNotify(func() error {
+		return c.Create(goctx.TODO(), binding)
+	}, bo, func(err error, d time.Duration) {
+		fmt.Printf("Couldn't create node-scan-binding after %s: %s\n", d.String(), err)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create node-scan-binding: %w", err)
+	}
+	return nil
 }
 
 func WaitForComplianceSuite(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
