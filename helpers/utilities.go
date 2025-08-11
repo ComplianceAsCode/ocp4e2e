@@ -901,3 +901,155 @@ func generateAssertionFile(
 	)
 	return nil
 }
+
+// WaitForRemediationsToBeApplied waits for all remediations from a compliance suite to be applied.
+func WaitForRemediationsToBeApplied(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
+	// Get all remediations for the suite
+	remList := &cmpv1alpha1.ComplianceRemediationList{}
+	labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
+	if err != nil {
+		return fmt.Errorf("failed to parse label selector: %w", err)
+	}
+	opts := &dynclient.ListOptions{
+		LabelSelector: labelSelector,
+	}
+	err = c.List(goctx.TODO(), remList, opts)
+	if err != nil {
+		return fmt.Errorf("failed to get remediation list: %w", err)
+	}
+
+	if len(remList.Items) == 0 {
+		log.Printf("No remediations found for suite %s", suiteName)
+		return nil
+	}
+
+	log.Printf("Waiting for %d remediations to be applied for suite %s", len(remList.Items), suiteName)
+
+	var errorRemediations []string
+	var appliedCount, errorCount, needsReviewCount, outdatedCount int
+
+	// Wait for each remediation to be applied
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 360) // 30 minutes max
+	err = backoff.RetryNotify(func() error {
+		pendingCount := 0
+		appliedCount = 0
+		errorCount = 0
+		needsReviewCount = 0
+		outdatedCount = 0
+		errorRemediations = []string{} // Reset error list on each retry
+
+		for i := range remList.Items {
+			key := types.NamespacedName{Name: remList.Items[i].Name, Namespace: remList.Items[i].Namespace}
+			currentRem := &cmpv1alpha1.ComplianceRemediation{}
+			err := c.Get(goctx.TODO(), key, currentRem)
+			if err != nil {
+				return fmt.Errorf("failed to get remediation %s: %w", remList.Items[i].Name, err)
+			}
+
+			switch currentRem.Status.ApplicationState {
+			case cmpv1alpha1.RemediationApplied:
+				appliedCount++
+			case cmpv1alpha1.RemediationError:
+				errorCount++
+				errorRemediations = append(
+					errorRemediations,
+					fmt.Sprintf("%s (Error: %s)", remList.Items[i].Name, currentRem.Status.ErrorMessage))
+			case cmpv1alpha1.RemediationNeedsReview:
+				needsReviewCount++
+				errorRemediations = append(errorRemediations, fmt.Sprintf("%s (NeedsReview)", remList.Items[i].Name))
+			case cmpv1alpha1.RemediationOutdated:
+				outdatedCount++
+				errorRemediations = append(errorRemediations, fmt.Sprintf("%s (Outdated)", remList.Items[i].Name))
+			case cmpv1alpha1.RemediationNotApplied, cmpv1alpha1.RemediationPending, cmpv1alpha1.RemediationMissingDependencies:
+				pendingCount++
+			default:
+				pendingCount++
+			}
+		}
+
+		// Only wait for NotApplied remediations - others are terminal states
+		if pendingCount > 0 {
+			return fmt.Errorf(
+				"%d remediations still pending (Applied: %d, Error: %d, NeedsReview: %d, Outdated: %d, Pending: %d)",
+				pendingCount, appliedCount, errorCount, needsReviewCount, outdatedCount, pendingCount)
+		}
+		return nil
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("Still waiting for remediations to be applied after %s: %s", d.String(), err)
+	})
+	if err != nil {
+		return fmt.Errorf("timed out waiting for remediations to be applied: %w", err)
+	}
+
+	// Report final status
+	log.Printf("Remediation status for suite %s: Applied=%d, Error=%d, NeedsReview=%d, Outdated=%d, Total=%d",
+		suiteName, appliedCount, errorCount, needsReviewCount, outdatedCount, len(remList.Items))
+
+	if len(errorRemediations) > 0 {
+		log.Printf("%d remediations require attention:", len(errorRemediations))
+		for _, errRem := range errorRemediations {
+			log.Printf("   WARNING: %s", errRem)
+		}
+	}
+
+	if appliedCount > 0 {
+		log.Printf("Successfully applied %d remediations for suite %s", appliedCount, suiteName)
+	}
+
+	return nil
+}
+
+// RescanComplianceSuite triggers a rescan of all scans in a compliance suite.
+func RescanComplianceSuite(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
+	// Get all scans for the suite
+	scanList := &cmpv1alpha1.ComplianceScanList{}
+	labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
+	if err != nil {
+		return fmt.Errorf("failed to parse label selector: %w", err)
+	}
+	opts := &dynclient.ListOptions{
+		LabelSelector: labelSelector,
+	}
+	err = c.List(goctx.TODO(), scanList, opts)
+	if err != nil {
+		return fmt.Errorf("failed to get scan list: %w", err)
+	}
+
+	if len(scanList.Items) == 0 {
+		return fmt.Errorf("no scans found for suite %s", suiteName)
+	}
+
+	log.Printf("Triggering rescan for %d scans in suite %s", len(scanList.Items), suiteName)
+
+	// Add rescan annotation to each scan
+	for i := range scanList.Items {
+		scan := &scanList.Items[i]
+		key := types.NamespacedName{Name: scan.Name, Namespace: scan.Namespace}
+
+		bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 30)
+		err := backoff.RetryNotify(func() error {
+			currentScan := &cmpv1alpha1.ComplianceScan{}
+			err := c.Get(goctx.TODO(), key, currentScan)
+			if err != nil {
+				return fmt.Errorf("failed to get scan %s: %w", scan.Name, err)
+			}
+
+			// Add rescan annotation
+			if currentScan.Annotations == nil {
+				currentScan.Annotations = make(map[string]string)
+			}
+			currentScan.Annotations[cmpv1alpha1.ComplianceScanRescanAnnotation] = ""
+
+			return c.Update(goctx.TODO(), currentScan)
+		}, bo, func(err error, d time.Duration) {
+			log.Printf("Failed to add rescan annotation to scan %s after %s: %s", scan.Name, d.String(), err)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to trigger rescan for scan %s: %w", scan.Name, err)
+		}
+		log.Printf("Triggered rescan for scan %s", scan.Name)
+	}
+
+	log.Printf("Successfully triggered rescan for all scans in suite %s", suiteName)
+	return nil
+}

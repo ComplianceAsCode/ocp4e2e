@@ -96,6 +96,36 @@ func runPlatformComplianceTests(tc *config.TestConfig, c dynclient.Client) func(
 		if err != nil {
 			t.Fatalf("Failed to verify platform scan results: %s", err)
 		}
+
+		// Exit early if bypassing remediations
+		if tc.BypassRemediations {
+			t.Log("Bypassing remediation application and rescan")
+			return
+		}
+
+		// Wait for remediations to be applied
+		err = helpers.WaitForRemediationsToBeApplied(tc, c, platformBindingName)
+		if err != nil {
+			t.Fatalf("Failed to wait for platform remediations to be applied: %s", err)
+		}
+
+		// Trigger rescan
+		err = helpers.RescanComplianceSuite(tc, c, platformBindingName)
+		if err != nil {
+			t.Fatalf("Failed to trigger platform rescan: %s", err)
+		}
+
+		// Wait for rescan to complete
+		err = helpers.WaitForComplianceSuite(tc, c, platformBindingName)
+		if err != nil {
+			t.Fatalf("Failed to wait for platform rescan to complete: %s", err)
+		}
+
+		// Verify results after remediation
+		err = helpers.VerifyPlatformScanResults(tc, c, platformBindingName)
+		if err != nil {
+			t.Fatalf("Failed to verify platform scan results after remediation: %s", err)
+		}
 	}
 }
 
@@ -122,6 +152,36 @@ func runNodeComplianceTests(tc *config.TestConfig, c dynclient.Client) func(*tes
 		err = helpers.VerifyNodeScanResults(tc, c, nodeBindingName)
 		if err != nil {
 			t.Fatalf("Failed to verify node scan results: %s", err)
+		}
+
+		// Exit early if bypassing remediations
+		if tc.BypassRemediations {
+			t.Log("Bypassing remediation application and rescan")
+			return
+		}
+
+		// Wait for remediations to be applied
+		err = helpers.WaitForRemediationsToBeApplied(tc, c, nodeBindingName)
+		if err != nil {
+			t.Fatalf("Failed to wait for node remediations to be applied: %s", err)
+		}
+
+		// Trigger rescan
+		err = helpers.RescanComplianceSuite(tc, c, nodeBindingName)
+		if err != nil {
+			t.Fatalf("Failed to trigger node rescan: %s", err)
+		}
+
+		// Wait for rescan to complete
+		err = helpers.WaitForComplianceSuite(tc, c, nodeBindingName)
+		if err != nil {
+			t.Fatalf("Failed to wait for node rescan to complete: %s", err)
+		}
+
+		// Verify results after remediation
+		err = helpers.VerifyNodeScanResults(tc, c, nodeBindingName)
+		if err != nil {
+			t.Fatalf("Failed to verify node scan results after remediation: %s", err)
 		}
 	}
 }
