@@ -978,7 +978,7 @@ func WaitForRemediationsToBeApplied(tc *testConfig.TestConfig, c dynclient.Clien
 		log.Printf("Still waiting for remediations to be applied after %s: %s", d.String(), err)
 	})
 	if err != nil {
-		return fmt.Errorf("timed out waiting for remediations to be applied: %w", err)
+		return handleRemediationTimeout(c, remList, appliedCount, errorCount, needsReviewCount, outdatedCount, err)
 	}
 
 	// Report final status
@@ -1052,4 +1052,54 @@ func RescanComplianceSuite(tc *testConfig.TestConfig, c dynclient.Client, suiteN
 
 	log.Printf("Successfully triggered rescan for all scans in suite %s", suiteName)
 	return nil
+}
+
+// handleRemediationTimeout handles the timeout scenario when waiting for remediations to be applied.
+func handleRemediationTimeout(
+	c dynclient.Client,
+	remList *cmpv1alpha1.ComplianceRemediationList,
+	appliedCount, errorCount, needsReviewCount, outdatedCount int,
+	originalErr error,
+) error {
+	// On timeout, provide detailed information about what's still pending
+	log.Printf("Timeout reached after 30 minutes waiting for remediations")
+	log.Printf("Final remediation status: Applied=%d, Error=%d, NeedsReview=%d, Outdated=%d, Pending=%d",
+		appliedCount,
+		errorCount,
+		needsReviewCount,
+		outdatedCount,
+		len(remList.Items)-(appliedCount+errorCount+needsReviewCount+outdatedCount))
+
+	// List all non-applied remediations for investigation
+	nonAppliedRems := getNonAppliedRemediations(c, remList)
+
+	if len(nonAppliedRems) > 0 {
+		log.Printf("Remediations requiring attention:")
+		for _, remInfo := range nonAppliedRems {
+			log.Printf("   ATTENTION: %s", remInfo)
+		}
+	}
+
+	return fmt.Errorf("timed out waiting for remediations to be applied: %w", originalErr)
+}
+
+// getNonAppliedRemediations retrieves information about remediations that are not applied.
+func getNonAppliedRemediations(c dynclient.Client, remList *cmpv1alpha1.ComplianceRemediationList) []string {
+	var nonAppliedRems []string
+	for i := range remList.Items {
+		key := types.NamespacedName{Name: remList.Items[i].Name, Namespace: remList.Items[i].Namespace}
+		currentRem := &cmpv1alpha1.ComplianceRemediation{}
+		getErr := c.Get(goctx.TODO(), key, currentRem)
+		if getErr == nil && currentRem.Status.ApplicationState != cmpv1alpha1.RemediationApplied {
+			state := string(currentRem.Status.ApplicationState)
+			if currentRem.Status.ApplicationState == cmpv1alpha1.RemediationError && currentRem.Status.ErrorMessage != "" {
+				nonAppliedRems = append(
+					nonAppliedRems,
+					fmt.Sprintf("%s (%s: %s)", remList.Items[i].Name, state, currentRem.Status.ErrorMessage))
+			} else {
+				nonAppliedRems = append(nonAppliedRems, fmt.Sprintf("%s (%s)", remList.Items[i].Name, state))
+			}
+		}
+	}
+	return nonAppliedRems
 }
