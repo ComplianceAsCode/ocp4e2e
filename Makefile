@@ -25,12 +25,12 @@ e2e: ## Run the e2e tests. This requires that the PROFILE and PRODUCT environmen
 	set -o pipefail; go test $(TEST_FLAGS) . -platform="$(PLATFORM)" -profile="$(PROFILE)" -product="$(PRODUCT)" -content-image="$(CONTENT_IMAGE)" -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="$(TEST_TYPE)" | tee .e2e-test-results.out
 
 .PHONY: e2e-platform
-e2e-platform: ## Run only platform rule tests
-	$(MAKE) e2e TEST_TYPE=platform
+e2e-platform: ## Run only platform compliance tests
+	set -o pipefail; go test $(TEST_FLAGS) . -product="$(PRODUCT)"  -content-image="$(CONTENT_IMAGE)" -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="platform" | tee .e2e-platform-test-results.out
 
 .PHONY: e2e-node
-e2e-node: ## Run only node rule tests
-	$(MAKE) e2e TEST_TYPE=node
+e2e-node: ## Run only node compliance tests
+	set -o pipefail; go test $(TEST_FLAGS) . -content-image="$(CONTENT_IMAGE)" -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="node" | tee .e2e-node-test-results.out
 
 .PHONY: help
 help: ## Show this help screen

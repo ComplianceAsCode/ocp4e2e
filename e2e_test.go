@@ -6,8 +6,6 @@ import (
 	"os"
 	"testing"
 
-	dynclient "sigs.k8s.io/controller-runtime/pkg/client"
-
 	"github.com/ComplianceAsCode/ocp4e2e/config"
 	"github.com/ComplianceAsCode/ocp4e2e/helpers"
 )
@@ -47,141 +45,136 @@ func TestMain(m *testing.M) {
 	os.Exit(testResult)
 }
 
-func TestE2e(t *testing.T) {
+func TestPlatformCompliance(t *testing.T) {
 	tc := config.NewTestConfig()
 
-	// Determine which tests to run based on testType
-	runPlatformTests := tc.TestType == "platform" || tc.TestType == "all"
-	runNodeTests := tc.TestType == "node" || tc.TestType == "all"
+	// Skip if test type doesn't include platform tests
+	if tc.TestType != "platform" && tc.TestType != "all" {
+		t.Skipf("Skipping platform tests: -test-type is %s", tc.TestType)
+	}
 
 	c, err := helpers.GenerateKubeConfig()
 	if err != nil {
 		t.Fatalf("Failed to generate kube config: %s", err)
 	}
 
-	if runPlatformTests {
-		t.Run("Platform compliance tests", runPlatformComplianceTests(tc, c))
+	// Create platform tailored profile
+	err = helpers.CreatePlatformTailoredProfile(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to create platform tailored profile: %s", err)
 	}
 
-	if runNodeTests {
-		t.Run("Node compliance tests", runNodeComplianceTests(tc, c))
+	// Create scan setting binding and run platform scan
+	platformBindingName := "platform-scan-binding"
+	err = helpers.CreatePlatformScanBinding(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to create %s scan binding: %s", platformBindingName, err)
 	}
 
-	if !runPlatformTests && !runNodeTests {
-		t.Fatalf("Invalid test-type: %s. Must be 'platform', 'node', or 'all'", tc.TestType)
+	err = helpers.WaitForComplianceSuite(tc, c, platformBindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for compliance suite: %s", err)
 	}
-}
 
-func runPlatformComplianceTests(tc *config.TestConfig, c dynclient.Client) func(*testing.T) {
-	return func(t *testing.T) {
-		// Create platform tailored profile
-		err := helpers.CreatePlatformTailoredProfile(tc, c)
-		if err != nil {
-			t.Fatalf("Failed to create platform tailored profile: %s", err)
-		}
+	err = helpers.VerifyPlatformScanResults(tc, c, platformBindingName)
+	if err != nil {
+		t.Fatalf("Failed to verify platform scan results: %s", err)
+	}
 
-		// Create scan setting binding and run platform scan
-		platformBindingName := "platform-scan-binding"
-		platformBindingErr := helpers.CreatePlatformScanBinding(tc, c)
-		if platformBindingErr != nil {
-			t.Fatalf("Failed to create %s scan binding: %s", platformBindingName, platformBindingErr)
-		}
+	// Exit early if bypassing remediations
+	if tc.BypassRemediations {
+		t.Log("Bypassing remediation application and rescan")
+		return
+	}
 
-		err = helpers.WaitForComplianceSuite(tc, c, platformBindingName)
-		if err != nil {
-			t.Fatalf("Failed to wait for compliance suite: %s", err)
-		}
+	// Wait for remediations to be applied
+	err = helpers.WaitForRemediationsToBeApplied(tc, c, platformBindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for platform remediations to be applied: %s", err)
+	}
 
-		err = helpers.VerifyPlatformScanResults(tc, c, platformBindingName)
-		if err != nil {
-			t.Fatalf("Failed to verify platform scan results: %s", err)
-		}
+	// Trigger rescan
+	err = helpers.RescanComplianceSuite(tc, c, platformBindingName)
+	if err != nil {
+		t.Fatalf("Failed to trigger platform rescan: %s", err)
+	}
 
-		// Exit early if bypassing remediations
-		if tc.BypassRemediations {
-			t.Log("Bypassing remediation application and rescan")
-			return
-		}
+	// Wait for rescan to complete
+	err = helpers.WaitForComplianceSuite(tc, c, platformBindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for platform rescan to complete: %s", err)
+	}
 
-		// Wait for remediations to be applied
-		err = helpers.WaitForRemediationsToBeApplied(tc, c, platformBindingName)
-		if err != nil {
-			t.Fatalf("Failed to wait for platform remediations to be applied: %s", err)
-		}
-
-		// Trigger rescan
-		err = helpers.RescanComplianceSuite(tc, c, platformBindingName)
-		if err != nil {
-			t.Fatalf("Failed to trigger platform rescan: %s", err)
-		}
-
-		// Wait for rescan to complete
-		err = helpers.WaitForComplianceSuite(tc, c, platformBindingName)
-		if err != nil {
-			t.Fatalf("Failed to wait for platform rescan to complete: %s", err)
-		}
-
-		// Verify results after remediation
-		err = helpers.VerifyPlatformScanResults(tc, c, platformBindingName)
-		if err != nil {
-			t.Fatalf("Failed to verify platform scan results after remediation: %s", err)
-		}
+	// Verify results after remediation
+	err = helpers.VerifyPlatformScanResults(tc, c, platformBindingName)
+	if err != nil {
+		t.Fatalf("Failed to verify platform scan results after remediation: %s", err)
 	}
 }
 
-func runNodeComplianceTests(tc *config.TestConfig, c dynclient.Client) func(*testing.T) {
-	return func(t *testing.T) {
-		// Create node tailored profile
-		err := helpers.CreateNodeTailoredProfile(tc, c)
-		if err != nil {
-			t.Fatalf("Failed to create node tailored profile: %s", err)
-		}
+func TestNodeCompliance(t *testing.T) {
+	tc := config.NewTestConfig()
 
-		// Create scan setting binding and run node scan
-		nodeBindingName := "node-scan-binding"
-		nodeBindingErr := helpers.CreateNodeScanBinding(tc, c)
-		if nodeBindingErr != nil {
-			t.Fatalf("Failed to create %s scan binding: %s", nodeBindingName, nodeBindingErr)
-		}
+	// Skip if test type doesn't include node tests
+	if tc.TestType != "node" && tc.TestType != "all" {
+		t.Skipf("Skipping node tests: -test-type is %s", tc.TestType)
+	}
 
-		err = helpers.WaitForComplianceSuite(tc, c, nodeBindingName)
-		if err != nil {
-			t.Fatalf("Failed to wait for compliance suite: %s", err)
-		}
+	c, err := helpers.GenerateKubeConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate kube config: %s", err)
+	}
 
-		err = helpers.VerifyNodeScanResults(tc, c, nodeBindingName)
-		if err != nil {
-			t.Fatalf("Failed to verify node scan results: %s", err)
-		}
+	// Create node tailored profile
+	err = helpers.CreateNodeTailoredProfile(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to create node tailored profile: %s", err)
+	}
 
-		// Exit early if bypassing remediations
-		if tc.BypassRemediations {
-			t.Log("Bypassing remediation application and rescan")
-			return
-		}
+	// Create scan setting binding and run node scan
+	nodeBindingName := "node-scan-binding"
+	err = helpers.CreateNodeScanBinding(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to create %s scan binding: %s", nodeBindingName, err)
+	}
 
-		// Wait for remediations to be applied
-		err = helpers.WaitForRemediationsToBeApplied(tc, c, nodeBindingName)
-		if err != nil {
-			t.Fatalf("Failed to wait for node remediations to be applied: %s", err)
-		}
+	err = helpers.WaitForComplianceSuite(tc, c, nodeBindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for compliance suite: %s", err)
+	}
 
-		// Trigger rescan
-		err = helpers.RescanComplianceSuite(tc, c, nodeBindingName)
-		if err != nil {
-			t.Fatalf("Failed to trigger node rescan: %s", err)
-		}
+	err = helpers.VerifyNodeScanResults(tc, c, nodeBindingName)
+	if err != nil {
+		t.Fatalf("Failed to verify node scan results: %s", err)
+	}
 
-		// Wait for rescan to complete
-		err = helpers.WaitForComplianceSuite(tc, c, nodeBindingName)
-		if err != nil {
-			t.Fatalf("Failed to wait for node rescan to complete: %s", err)
-		}
+	// Exit early if bypassing remediations
+	if tc.BypassRemediations {
+		t.Log("Bypassing remediation application and rescan")
+		return
+	}
 
-		// Verify results after remediation
-		err = helpers.VerifyNodeScanResults(tc, c, nodeBindingName)
-		if err != nil {
-			t.Fatalf("Failed to verify node scan results after remediation: %s", err)
-		}
+	// Wait for remediations to be applied
+	err = helpers.WaitForRemediationsToBeApplied(tc, c, nodeBindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for node remediations to be applied: %s", err)
+	}
+
+	// Trigger rescan
+	err = helpers.RescanComplianceSuite(tc, c, nodeBindingName)
+	if err != nil {
+		t.Fatalf("Failed to trigger node rescan: %s", err)
+	}
+
+	// Wait for rescan to complete
+	err = helpers.WaitForComplianceSuite(tc, c, nodeBindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for node rescan to complete: %s", err)
+	}
+
+	// Verify results after remediation
+	err = helpers.VerifyNodeScanResults(tc, c, nodeBindingName)
+	if err != nil {
+		t.Fatalf("Failed to verify node scan results after remediation: %s", err)
 	}
 }
