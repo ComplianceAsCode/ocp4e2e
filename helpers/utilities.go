@@ -618,15 +618,28 @@ func CreateNodeScanBinding(tc *testConfig.TestConfig, c dynclient.Client) error 
 
 func WaitForComplianceSuite(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
 	key := types.NamespacedName{Name: suiteName, Namespace: tc.OperatorNamespace.Namespace}
-	// If a scan takes longer than 30 minutes to spin up and finish,
-	// something else is likely interfering or causing issues.
-	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 360)
 
-	err := backoff.RetryNotify(func() error {
+	// First, check if this might be a rescan scenario by seeing if suite is already DONE
+	initialSuite := &cmpv1alpha1.ComplianceSuite{}
+	err := c.Get(goctx.TODO(), key, initialSuite)
+	if err != nil {
+		return fmt.Errorf("failed to get initial suite status: %w", err)
+	}
+
+	isRescan := len(initialSuite.Status.ScanStatuses) > 0
+	if isRescan {
+		err := handleRescanWait(tc, c, key, suiteName, initialSuite)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Now wait for the suite to complete (whether initial scan or rescan)
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 360) // 30 minutes
+	err = backoff.RetryNotify(func() error {
 		suite := &cmpv1alpha1.ComplianceSuite{}
 		err := c.Get(goctx.TODO(), key, suite)
 		if err != nil {
-			// Returning an error merely makes this retry after the interval
 			return err
 		}
 		if len(suite.Status.ScanStatuses) == 0 {
@@ -635,11 +648,9 @@ func WaitForComplianceSuite(tc *testConfig.TestConfig, c dynclient.Client, suite
 		for idx := range suite.Status.ScanStatuses {
 			scanstatus := &suite.Status.ScanStatuses[idx]
 			if scanstatus.Phase != cmpv1alpha1.PhaseDone {
-				// Returning an error merely makes this retry after the interval
-				return fmt.Errorf("suite %s is %s", suiteName, suite.Status.Phase)
+				return fmt.Errorf("suite %s scan %s is %s", suiteName, scanstatus.Name, scanstatus.Phase)
 			}
 			if scanstatus.Result == cmpv1alpha1.ResultError {
-				// If there was an error, we can stop already.
 				return fmt.Errorf("there was an unexpected error in the scan '%s': %s",
 					scanstatus.Name, scanstatus.ErrorMessage)
 			}
@@ -1216,4 +1227,50 @@ func getNonAppliedRemediations(c dynclient.Client, remList *cmpv1alpha1.Complian
 		}
 	}
 	return nonAppliedRems
+}
+
+// handleRescanWait handles waiting for a rescan to start when the suite is already DONE.
+func handleRescanWait(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	key types.NamespacedName,
+	suiteName string,
+	initialSuite *cmpv1alpha1.ComplianceSuite,
+) error {
+	if !areAllScansComplete(initialSuite) {
+		return nil // Not all scans are done, no need to wait for rescan
+	}
+
+	log.Printf("Suite %s is already DONE, waiting for rescan to start", suiteName)
+	// Wait for rescan to start (suite transitions away from all DONE)
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 60) // 5 minutes
+	err := backoff.RetryNotify(func() error {
+		suite := &cmpv1alpha1.ComplianceSuite{}
+		err := c.Get(goctx.TODO(), key, suite)
+		if err != nil {
+			return err
+		}
+
+		if areAllScansComplete(suite) {
+			return fmt.Errorf("rescan has not started yet")
+		}
+		return nil
+	}, bo, func(e error, ti time.Duration) {
+		log.Printf("Still waiting for rescan to start after %s: %s", ti.String(), e)
+	})
+	if err != nil {
+		return fmt.Errorf("timed out waiting for rescan to start: %w", err)
+	}
+	log.Printf("Rescan has started for suite %s", suiteName)
+	return nil
+}
+
+// areAllScansComplete checks if all scans in a compliance suite are complete.
+func areAllScansComplete(suite *cmpv1alpha1.ComplianceSuite) bool {
+	for idx := range suite.Status.ScanStatuses {
+		if suite.Status.ScanStatuses[idx].Phase != cmpv1alpha1.PhaseDone {
+			return false
+		}
+	}
+	return true
 }
