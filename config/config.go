@@ -89,9 +89,6 @@ func ValidateFlags() error {
 	if contentImage == "" {
 		return fmt.Errorf("a content image must be provided with the `-content-image` flag")
 	}
-	if product == "" {
-		return fmt.Errorf("a product must be given with the `-product` flag")
-	}
 	return nil
 }
 
