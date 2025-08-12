@@ -93,6 +93,12 @@ func TestPlatformCompliance(t *testing.T) {
 		t.Fatalf("Failed to wait for platform remediations to be applied: %s", err)
 	}
 
+	// Wait for MachineConfigPools to be updated after remediations
+	err = helpers.WaitForMachineConfigPoolsUpdated(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to wait for MachineConfigPools to be updated: %s", err)
+	}
+
 	// Trigger rescan
 	err = helpers.RescanComplianceSuite(tc, c, platformBindingName)
 	if err != nil {
@@ -158,6 +164,12 @@ func TestNodeCompliance(t *testing.T) {
 	err = helpers.WaitForRemediationsToBeApplied(tc, c, nodeBindingName)
 	if err != nil {
 		t.Fatalf("Failed to wait for node remediations to be applied: %s", err)
+	}
+
+	// Wait for MachineConfigPools to be updated after remediations
+	err = helpers.WaitForMachineConfigPoolsUpdated(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to wait for MachineConfigPools to be updated: %s", err)
 	}
 
 	// Trigger rescan

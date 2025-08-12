@@ -1054,6 +1054,105 @@ func RescanComplianceSuite(tc *testConfig.TestConfig, c dynclient.Client, suiteN
 	return nil
 }
 
+// WaitForMachineConfigPoolsUpdated waits for all MachineConfigPools to be fully updated.
+func WaitForMachineConfigPoolsUpdated(tc *testConfig.TestConfig, c dynclient.Client) error {
+	// Get all MachineConfigPools
+	mcpList := &mcfgv1.MachineConfigPoolList{}
+	err := c.List(goctx.TODO(), mcpList)
+	if err != nil {
+		return fmt.Errorf("failed to list MachineConfigPools: %w", err)
+	}
+
+	if len(mcpList.Items) == 0 {
+		log.Printf("No MachineConfigPools found")
+		return nil
+	}
+
+	log.Printf("Waiting for %d MachineConfigPools to be fully updated", len(mcpList.Items))
+
+	// Wait for all MCPs to be updated
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 480) // 40 minutes max
+	err = backoff.RetryNotify(func() error {
+		pendingPools := []string{}
+
+		for i := range mcpList.Items {
+			key := types.NamespacedName{Name: mcpList.Items[i].Name}
+			currentMCP := &mcfgv1.MachineConfigPool{}
+			err := c.Get(goctx.TODO(), key, currentMCP)
+			if err != nil {
+				return fmt.Errorf("failed to get MachineConfigPool %s: %w", mcpList.Items[i].Name, err)
+			}
+
+			// Check if the pool is fully updated
+			if !isMachineConfigPoolUpdated(currentMCP) {
+				pendingPools = append(pendingPools, fmt.Sprintf("%s (Updated: %d/%d, Unavailable: %d)",
+					currentMCP.Name,
+					currentMCP.Status.UpdatedMachineCount,
+					currentMCP.Status.MachineCount,
+					currentMCP.Status.UnavailableMachineCount))
+			}
+		}
+
+		if len(pendingPools) > 0 {
+			return fmt.Errorf("%d MachineConfigPools still updating: %v", len(pendingPools), pendingPools)
+		}
+		return nil
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("Still waiting for MachineConfigPools to update after %s: %s", d.String(), err)
+	})
+	if err != nil {
+		// On timeout, provide detailed information about pending pools
+		log.Printf("Timeout reached after 40 minutes waiting for MachineConfigPools")
+
+		pendingPools := []string{}
+		for i := range mcpList.Items {
+			key := types.NamespacedName{Name: mcpList.Items[i].Name}
+			currentMCP := &mcfgv1.MachineConfigPool{}
+			getErr := c.Get(goctx.TODO(), key, currentMCP)
+			if getErr == nil && !isMachineConfigPoolUpdated(currentMCP) {
+				pendingPools = append(pendingPools, fmt.Sprintf("%s (Updated: %d/%d, Unavailable: %d, Ready: %d, Degraded: %s)",
+					currentMCP.Name,
+					currentMCP.Status.UpdatedMachineCount,
+					currentMCP.Status.MachineCount,
+					currentMCP.Status.UnavailableMachineCount,
+					currentMCP.Status.ReadyMachineCount,
+					getBoolString(currentMCP.Status.DegradedMachineCount > 0)))
+			}
+		}
+
+		if len(pendingPools) > 0 {
+			log.Printf("MachineConfigPools still updating:")
+			for _, poolInfo := range pendingPools {
+				log.Printf("   UPDATING: %s", poolInfo)
+			}
+		}
+
+		return fmt.Errorf("timed out waiting for MachineConfigPools to update: %w", err)
+	}
+
+	log.Printf("All MachineConfigPools are fully updated")
+	return nil
+}
+
+// isMachineConfigPoolUpdated checks if a MachineConfigPool is fully updated.
+func isMachineConfigPoolUpdated(mcp *mcfgv1.MachineConfigPool) bool {
+	// Pool is updated when:
+	// 1. All machines are updated (UpdatedMachineCount == MachineCount)
+	// 2. No machines are unavailable (UnavailableMachineCount == 0)
+	// 3. No machines are degraded (DegradedMachineCount == 0)
+	return mcp.Status.UpdatedMachineCount == mcp.Status.MachineCount &&
+		mcp.Status.UnavailableMachineCount == 0 &&
+		mcp.Status.DegradedMachineCount == 0
+}
+
+// getBoolString converts a boolean to a string for logging.
+func getBoolString(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
 // handleRemediationTimeout handles the timeout scenario when waiting for remediations to be applied.
 func handleRemediationTimeout(
 	c dynclient.Client,
