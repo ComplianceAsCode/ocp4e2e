@@ -3,7 +3,6 @@ PROFILE?=
 # Since we already have test for RHCOS4, this is the default for now.
 PRODUCT?=rhcos4
 PLATFORM?=ocp4
-CONTENT_IMAGE?=quay.io/redhat-user-workloads/ocp-isc-tenant/compliance-operator-content-dev:master
 ROOT_DIR?=
 TEST_FLAGS?=-v -timeout 120m
 # Should the test attempt to install the operator?
@@ -22,15 +21,15 @@ all: e2e
 .PHONY: e2e
 e2e: ## Run the e2e tests. This requires that the PROFILE and PRODUCT environment variables be set.
 ## idp_fix.patch is used to fix route destination cert for keycloak IdP deployment
-	set -o pipefail; go test $(TEST_FLAGS) . -platform="$(PLATFORM)" -profile="$(PROFILE)" -product="$(PRODUCT)" -content-image="$(CONTENT_IMAGE)" -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="$(TEST_TYPE)" | tee .e2e-test-results.out
+	set -o pipefail; go test $(TEST_FLAGS) . -platform="$(PLATFORM)" -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="$(TEST_TYPE)" | tee .e2e-test-results.out
 
 .PHONY: e2e-platform
 e2e-platform: ## Run only platform compliance tests
-	set -o pipefail; go test $(TEST_FLAGS) . -product="$(PRODUCT)"  -content-image="$(CONTENT_IMAGE)" -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="platform" | tee .e2e-platform-test-results.out
+	set -o pipefail; go test $(TEST_FLAGS) . -product="$(PRODUCT)"  -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="platform" | tee .e2e-platform-test-results.out
 
 .PHONY: e2e-node
 e2e-node: ## Run only node compliance tests
-	set -o pipefail; go test $(TEST_FLAGS) . -content-image="$(CONTENT_IMAGE)" -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="node" | tee .e2e-node-test-results.out
+	set -o pipefail; go test $(TEST_FLAGS) . -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="node" | tee .e2e-node-test-results.out
 
 .PHONY: help
 help: ## Show this help screen
