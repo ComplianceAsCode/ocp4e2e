@@ -1,2 +1,4 @@
 build/
 .e2e-test-results.out
+.e2e-platform-test-results.out
+.e2e-node-test-results.out
