@@ -926,12 +926,13 @@ func WaitForRemediationsToBeApplied(tc *testConfig.TestConfig, c dynclient.Clien
 	log.Printf("Waiting for %d remediations to be applied for suite %s", len(remList.Items), suiteName)
 
 	var errorRemediations []string
-	var appliedCount, errorCount, needsReviewCount, outdatedCount int
+	var appliedCount, errorCount, needsReviewCount, outdatedCount, missingDepCount int
 
 	// Wait for each remediation to be applied
 	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 360) // 30 minutes max
 	err = backoff.RetryNotify(func() error {
 		pendingCount := 0
+		missingDepCount = 0
 		appliedCount = 0
 		errorCount = 0
 		needsReviewCount = 0
@@ -960,7 +961,11 @@ func WaitForRemediationsToBeApplied(tc *testConfig.TestConfig, c dynclient.Clien
 			case cmpv1alpha1.RemediationOutdated:
 				outdatedCount++
 				errorRemediations = append(errorRemediations, fmt.Sprintf("%s (Outdated)", remList.Items[i].Name))
-			case cmpv1alpha1.RemediationNotApplied, cmpv1alpha1.RemediationPending, cmpv1alpha1.RemediationMissingDependencies:
+			case cmpv1alpha1.RemediationMissingDependencies:
+				missingDepCount++
+			case cmpv1alpha1.RemediationNotApplied:
+				pendingCount++
+			case cmpv1alpha1.RemediationPending:
 				pendingCount++
 			default:
 				pendingCount++
@@ -970,15 +975,23 @@ func WaitForRemediationsToBeApplied(tc *testConfig.TestConfig, c dynclient.Clien
 		// Only wait for NotApplied remediations - others are terminal states
 		if pendingCount > 0 {
 			return fmt.Errorf(
-				"%d remediations still pending (Applied: %d, Error: %d, NeedsReview: %d, Outdated: %d, Pending: %d)",
-				pendingCount, appliedCount, errorCount, needsReviewCount, outdatedCount, pendingCount)
+				"%d remediations still pending (Applied: %d, Error: %d, NeedsReview: %d, Outdated: %d, "+
+					"MissingDependencies: %d, Pending: %d)",
+				pendingCount,
+				appliedCount,
+				errorCount,
+				needsReviewCount,
+				outdatedCount,
+				missingDepCount,
+				pendingCount)
 		}
 		return nil
 	}, bo, func(err error, d time.Duration) {
 		log.Printf("Still waiting for remediations to be applied after %s: %s", d.String(), err)
 	})
 	if err != nil {
-		return handleRemediationTimeout(c, remList, appliedCount, errorCount, needsReviewCount, outdatedCount, err)
+		return handleRemediationTimeout(
+			c, remList, appliedCount, errorCount, needsReviewCount, outdatedCount, missingDepCount, err)
 	}
 
 	// Report final status
@@ -1157,16 +1170,18 @@ func getBoolString(b bool) string {
 func handleRemediationTimeout(
 	c dynclient.Client,
 	remList *cmpv1alpha1.ComplianceRemediationList,
-	appliedCount, errorCount, needsReviewCount, outdatedCount int,
+	appliedCount, errorCount, needsReviewCount, outdatedCount, missingDepCount int,
 	originalErr error,
 ) error {
 	// On timeout, provide detailed information about what's still pending
 	log.Printf("Timeout reached after 30 minutes waiting for remediations")
-	log.Printf("Final remediation status: Applied=%d, Error=%d, NeedsReview=%d, Outdated=%d, Pending=%d",
+	log.Printf(
+		"Final remediation status: Applied=%d, Error=%d, NeedsReview=%d, Outdated=%d, MissingDependencies=%d, Pending=%d",
 		appliedCount,
 		errorCount,
 		needsReviewCount,
 		outdatedCount,
+		missingDepCount,
 		len(remList.Items)-(appliedCount+errorCount+needsReviewCount+outdatedCount))
 
 	// List all non-applied remediations for investigation
