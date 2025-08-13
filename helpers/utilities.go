@@ -622,13 +622,16 @@ func WaitForComplianceSuite(tc *testConfig.TestConfig, c dynclient.Client, suite
 	// First, check if this might be a rescan scenario by seeing if suite is already DONE
 	initialSuite := &cmpv1alpha1.ComplianceSuite{}
 	err := c.Get(goctx.TODO(), key, initialSuite)
-	if err != nil {
-		return fmt.Errorf("failed to get initial suite status: %w", err)
-	}
 
-	isRescan := len(initialSuite.Status.ScanStatuses) > 0
-	if isRescan {
-		err := handleRescanWait(tc, c, key, suiteName, initialSuite)
+	// If suite doesn't exist yet, this is a first run - skip rescan detection
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to get initial suite status: %w", err)
+		}
+		log.Printf("ComplianceSuite %s doesn't exist yet, waiting for it to be created", suiteName)
+	} else {
+		// Suite exists, check if this is a rescan scenario
+		err = handleRescanIfNeeded(tc, c, key, suiteName, initialSuite)
 		if err != nil {
 			return err
 		}
@@ -1227,6 +1230,21 @@ func getNonAppliedRemediations(c dynclient.Client, remList *cmpv1alpha1.Complian
 		}
 	}
 	return nonAppliedRems
+}
+
+// handleRescanIfNeeded checks if a rescan is needed and handles the waiting.
+func handleRescanIfNeeded(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	key types.NamespacedName,
+	suiteName string,
+	initialSuite *cmpv1alpha1.ComplianceSuite,
+) error {
+	isRescan := len(initialSuite.Status.ScanStatuses) > 0
+	if !isRescan {
+		return nil
+	}
+	return handleRescanWait(tc, c, key, suiteName, initialSuite)
 }
 
 // handleRescanWait handles waiting for a rescan to start when the suite is already DONE.
