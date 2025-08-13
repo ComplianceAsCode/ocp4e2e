@@ -916,6 +916,134 @@ func generateAssertionFile(
 	return nil
 }
 
+// ApplyRemediationsWithDependencies handles remediation application with
+// dependency resolution. It iteratively applies remediations and rescans until
+// no more progress can be made.
+func ApplyRemediationsWithDependencies(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
+	// Limit the amount of iterations to 5. If we need to bounce the
+	// cluster more than 5 times because remediations are that nested, we
+	// need to drastically simplify that.
+	maxIterations := 5
+	iteration := 0
+
+	for iteration < maxIterations {
+		iteration++
+		log.Printf("Starting remediation iteration %d for suite %s", iteration, suiteName)
+
+		// Wait for remediations to be applied
+		err := WaitForRemediationsToBeApplied(tc, c, suiteName)
+		if err != nil {
+			return fmt.Errorf("failed during remediation iteration %d: %w", iteration, err)
+		}
+
+		// Check if we have remediations with missing dependencies
+		hasMissingDeps, missingDepCount, err := checkRemediationsWithMissingDependencies(tc, c, suiteName)
+		if err != nil {
+			return fmt.Errorf("failed to check missing dependencies in iteration %d: %w", iteration, err)
+		}
+
+		if !hasMissingDeps {
+			log.Printf("No remediations with missing dependencies found after %d iterations", iteration)
+
+			// Perform final rescan to get accurate results after all remediations
+			log.Printf("Performing final rescan to get accurate results after all remediations")
+
+			// Wait for MachineConfigPools to be updated after final remediations
+			err = WaitForMachineConfigPoolsUpdated(tc, c)
+			if err != nil {
+				return fmt.Errorf("failed to wait for MachineConfigPools after final remediations: %w", err)
+			}
+
+			// Trigger final rescan
+			err = RescanComplianceSuite(tc, c, suiteName)
+			if err != nil {
+				return fmt.Errorf("failed to trigger final rescan: %w", err)
+			}
+
+			// Wait for final rescan to complete
+			err = WaitForComplianceSuite(tc, c, suiteName)
+			if err != nil {
+				return fmt.Errorf("failed to wait for final rescan: %w", err)
+			}
+
+			log.Printf("Final rescan completed successfully")
+			break
+		}
+
+		log.Printf("Found %d remediations with missing dependencies, triggering rescan", missingDepCount)
+
+		// Wait for MachineConfigPools to be updated after remediations
+		err = WaitForMachineConfigPoolsUpdated(tc, c)
+		if err != nil {
+			return fmt.Errorf("failed to wait for MachineConfigPools in iteration %d: %w", iteration, err)
+		}
+
+		// Trigger rescan to re-evaluate dependencies
+		err = RescanComplianceSuite(tc, c, suiteName)
+		if err != nil {
+			return fmt.Errorf("failed to trigger rescan in iteration %d: %w", iteration, err)
+		}
+
+		// Wait for rescan to complete
+		err = WaitForComplianceSuite(tc, c, suiteName)
+		if err != nil {
+			return fmt.Errorf("failed to wait for rescan in iteration %d: %w", iteration, err)
+		}
+
+		// Check if we made progress (fewer missing dependencies)
+		newHasMissingDeps, newMissingDepCount, err := checkRemediationsWithMissingDependencies(tc, c, suiteName)
+		if err != nil {
+			return fmt.Errorf("failed to check progress in iteration %d: %w", iteration, err)
+		}
+
+		if newHasMissingDeps && newMissingDepCount >= missingDepCount {
+			log.Printf("No progress made in iteration %d (missing deps: %d -> %d), stopping",
+				iteration,
+				missingDepCount,
+				newMissingDepCount)
+			break
+		}
+	}
+
+	if iteration >= maxIterations {
+		return fmt.Errorf("reached maximum iterations (%d) without resolving all dependencies", maxIterations)
+	}
+
+	log.Printf("Successfully resolved all remediation dependencies after %d iterations", iteration)
+	return nil
+}
+
+// checkRemediationsWithMissingDependencies checks if there are remediations
+// with missing dependencies.
+func checkRemediationsWithMissingDependencies(
+	_ *testConfig.TestConfig,
+	c dynclient.Client,
+	suiteName string,
+) (missingDeps bool, missingDepCount int, err error) {
+	remList := &cmpv1alpha1.ComplianceRemediationList{}
+	labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
+	if err != nil {
+		return false, 0, fmt.Errorf("failed to parse label selector: %w", err)
+	}
+	opts := &dynclient.ListOptions{
+		LabelSelector: labelSelector,
+	}
+	err = c.List(goctx.TODO(), remList, opts)
+	if err != nil {
+		return false, 0, fmt.Errorf("failed to get remediation list: %w", err)
+	}
+
+	missingDepCount = 0
+	for i := range remList.Items {
+		if remList.Items[i].Status.ApplicationState == cmpv1alpha1.RemediationMissingDependencies {
+			missingDepCount++
+		}
+	}
+
+	log.Printf("Found %d remediations with missing dependencies", missingDepCount)
+	return missingDepCount > 0, missingDepCount, nil
+}
+
 // WaitForRemediationsToBeApplied waits for all remediations from a compliance suite to be applied.
 func WaitForRemediationsToBeApplied(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
 	// Get all remediations for the suite

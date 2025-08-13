@@ -87,28 +87,10 @@ func TestPlatformCompliance(t *testing.T) {
 		return
 	}
 
-	// Wait for remediations to be applied
-	err = helpers.WaitForRemediationsToBeApplied(tc, c, platformBindingName)
+	// Apply remediations with dependency resolution (includes rescanning)
+	err = helpers.ApplyRemediationsWithDependencies(tc, c, platformBindingName)
 	if err != nil {
-		t.Fatalf("Failed to wait for platform remediations to be applied: %s", err)
-	}
-
-	// Wait for MachineConfigPools to be updated after remediations
-	err = helpers.WaitForMachineConfigPoolsUpdated(tc, c)
-	if err != nil {
-		t.Fatalf("Failed to wait for MachineConfigPools to be updated: %s", err)
-	}
-
-	// Trigger rescan
-	err = helpers.RescanComplianceSuite(tc, c, platformBindingName)
-	if err != nil {
-		t.Fatalf("Failed to trigger platform rescan: %s", err)
-	}
-
-	// Wait for rescan to complete
-	err = helpers.WaitForComplianceSuite(tc, c, platformBindingName)
-	if err != nil {
-		t.Fatalf("Failed to wait for platform rescan to complete: %s", err)
+		t.Fatalf("Failed to apply platform remediations: %s", err)
 	}
 
 	// Verify results after remediation
@@ -160,28 +142,10 @@ func TestNodeCompliance(t *testing.T) {
 		return
 	}
 
-	// Wait for remediations to be applied
-	err = helpers.WaitForRemediationsToBeApplied(tc, c, nodeBindingName)
+	// Apply remediations with dependency resolution (includes rescanning)
+	err = helpers.ApplyRemediationsWithDependencies(tc, c, nodeBindingName)
 	if err != nil {
-		t.Fatalf("Failed to wait for node remediations to be applied: %s", err)
-	}
-
-	// Wait for MachineConfigPools to be updated after remediations
-	err = helpers.WaitForMachineConfigPoolsUpdated(tc, c)
-	if err != nil {
-		t.Fatalf("Failed to wait for MachineConfigPools to be updated: %s", err)
-	}
-
-	// Trigger rescan
-	err = helpers.RescanComplianceSuite(tc, c, nodeBindingName)
-	if err != nil {
-		t.Fatalf("Failed to trigger node rescan: %s", err)
-	}
-
-	// Wait for rescan to complete
-	err = helpers.WaitForComplianceSuite(tc, c, nodeBindingName)
-	if err != nil {
-		t.Fatalf("Failed to wait for node rescan to complete: %s", err)
+		t.Fatalf("Failed to apply node remediations: %s", err)
 	}
 
 	// Verify results after remediation
