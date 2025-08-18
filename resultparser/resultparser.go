@@ -62,7 +62,6 @@ func (oo *orOperand) merge(other evalBuilder) (evalBuilder, error) {
 	return oo, nil
 }
 
-
 func ParseRoleResultEval(rawstring string) (Evaluator, error) {
 	tokens := tokenizeRoleResultEval(rawstring)
 	var currentOperand evalBuilder

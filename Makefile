@@ -39,6 +39,10 @@ verify: verify-go-lint ## Run all verification targets
 verify-go-lint: $(BUILD_DIR)/golangci-lint ## Verify the golang code by linting
 	$(BUILD_DIR)/golangci-lint run
 
+.PHONY: fmt
+fmt: ## Format Go code using gofmt
+	find . -name '*.go' -not -path './vendor/*' -exec gofmt -s -w {} \;
+
 $(BUILD_DIR)/golangci-lint: $(BUILD_DIR)
 	export \
 		VERSION=$(GOLANGCI_LINT_VERSION) \
