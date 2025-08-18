@@ -961,6 +961,31 @@ func (ctx *e2econtext) assertProfileAssertionFile(
 	ctx.profileAssert = *profileTest
 }
 
+func (ctx *e2econtext) getRuleTest(rulePath, ruleResultName, _ string) (*RuleTest, error) {
+	if ctx.profileAssertExist {
+		test, ok := ctx.profileAssert.RuleResults[ruleResultName]
+		if !ok {
+			return nil, fmt.Errorf("E2E-Error: %s: %w", ruleResultName, errRuleAssertionMissing)
+		}
+		return &test, nil
+	}
+
+	buf, err := ctx.getTestDefinition(rulePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// There's no test file, so no need to verify
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	test := RuleTest{}
+	if err := yaml.Unmarshal(buf, &test); err != nil {
+		return nil, err
+	}
+	return &test, nil
+}
+
 func (ctx *e2econtext) verifyRule(
 	t *testing.T, result *cmpv1alpha1.ComplianceCheckResult, afterRemediations bool,
 ) (remediationPath string, excluded bool, err error) {
@@ -977,45 +1002,31 @@ func (ctx *e2econtext) verifyRule(
 	rulePath := strings.Trim(string(rulePathBytes), "\n")
 
 	remPath := ctx.getManualRemediationPath(rulePath)
-	test := RuleTest{}
-	if !ctx.profileAssertExist {
-		buf, err := ctx.getTestDefinition(rulePath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				// There's no test file, so no need to verify
-				return "", false, nil
-			}
-			return "", false, err
-		}
-
-		if err := yaml.Unmarshal(buf, &test); err != nil {
-			return "", false, err
-		}
-	} else {
-		var ok bool
-		if test, ok = ctx.profileAssert.RuleResults[ruleResultName]; !ok {
-			err := fmt.Errorf("E2E-Error: %s: %w", ruleResultName, errRuleAssertionMissing)
-
-			return remPath, false, err
-		}
+	test, err := ctx.getRuleTest(rulePath, ruleResultName, remPath)
+	if err != nil {
+		return "", false, err
+	}
+	if test == nil {
+		// No test file found, no need to verify
+		return "", false, nil
 	}
 
 	// Initial run
 	//nolint:nestif
 	if !afterRemediations {
-		if err := verifyRuleResult(result, test.DefaultResult, test, ruleResultName, "default"); err != nil {
+		if err := verifyRuleResult(result, test.DefaultResult, *test, ruleResultName, "default"); err != nil {
 			return remPath, isExcluded(test.ExcludeFromCount), err
 		}
 	} else {
 		// after remediations
 		// If we expect a change after remediation is applied, let's test for it
 		if test.ResultAfterRemediation != nil {
-			if err := verifyRuleResult(result, test.ResultAfterRemediation, test, ruleResultName, "remediated"); err != nil {
+			if err := verifyRuleResult(result, test.ResultAfterRemediation, *test, ruleResultName, "remediated"); err != nil {
 				return remPath, isExcluded(test.ExcludeFromCount), err
 			}
 		} else {
 			// Check that the default didn't change
-			if err := verifyRuleResult(result, test.DefaultResult, test, ruleResultName, "default"); err != nil {
+			if err := verifyRuleResult(result, test.DefaultResult, *test, ruleResultName, "default"); err != nil {
 				return remPath, isExcluded(test.ExcludeFromCount), err
 			}
 		}
