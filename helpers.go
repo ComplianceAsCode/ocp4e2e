@@ -687,7 +687,6 @@ func (ctx *e2econtext) doRescan(t *testing.T, s string) {
 		// The scan has been reset, we're good to go
 		return true, nil
 	})
-
 	// timeout error
 	if err != nil {
 		t.Fatalf("Timed out waiting for scan to be reset: %s", err)

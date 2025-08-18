@@ -43,6 +43,10 @@ verify-go-lint: $(BUILD_DIR)/golangci-lint ## Verify the golang code by linting
 fmt: ## Format Go code using gofmt
 	find . -name '*.go' -not -path './vendor/*' -exec gofmt -s -w {} \;
 
+.PHONY: fumpt
+fumpt: $(BUILD_DIR)/gofumpt ## Format Go code using gofumpt (stricter than gofmt)
+	find . -name '*.go' -not -path './vendor/*' -exec $(BUILD_DIR)/gofumpt -w {} \;
+
 $(BUILD_DIR)/golangci-lint: $(BUILD_DIR)
 	export \
 		VERSION=$(GOLANGCI_LINT_VERSION) \
@@ -51,6 +55,9 @@ $(BUILD_DIR)/golangci-lint: $(BUILD_DIR)
 	curl -sfL $$URL/HEAD/install.sh | sh -s $$VERSION
 	$(BUILD_DIR)/golangci-lint version
 	$(BUILD_DIR)/golangci-lint linters
+
+$(BUILD_DIR)/gofumpt: $(BUILD_DIR)
+	GOBIN=$(PWD)/$(BUILD_DIR) go install mvdan.cc/gofumpt@latest
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
