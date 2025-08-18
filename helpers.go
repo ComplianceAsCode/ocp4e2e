@@ -111,7 +111,8 @@ func init() {
 	flag.StringVar(&contentImage, "content-image", "", "The path to the image with the content to test")
 	flag.BoolVar(&installOperator, "install-operator", true, "Should the test-code install the operator or not? "+
 		"This is useful if you need to test with your own deployment of the operator")
-	flag.BoolVar(&bypassRemediations, "bypass-remediations", false, "Do not apply remedations and summarize results after the first scan")
+	flag.BoolVar(&bypassRemediations, "bypass-remediations", false,
+		"Do not apply remedations and summarize results after the first scan")
 }
 
 func newE2EContext(t *testing.T) *e2econtext {
@@ -904,7 +905,8 @@ func (ctx *e2econtext) summarizeSuiteFindings(t *testing.T, suite string) {
 		if err != nil {
 			t.Fatalf("failed to get ComplianceCheckResults with status FAIL and remediations: %s", err)
 		}
-		t.Logf("Scan %s contained %d checks that failed, but have a remediation available", scan.Name, len(failedWithRemediationList.Items))
+		t.Logf("Scan %s contained %d checks that failed, but have a remediation available",
+			scan.Name, len(failedWithRemediationList.Items))
 	}
 	// print out the profile assertion file if it doesn't exist
 	if !ctx.profileAssertExist && ctx.profileAssert.RuleResults != nil {
@@ -916,8 +918,11 @@ func (ctx *e2econtext) summarizeSuiteFindings(t *testing.T, suite string) {
 	}
 }
 
-func (ctx *e2econtext) assertProfileAssertionFile(t *testing.T, resultList *cmpv1alpha1.ComplianceCheckResultList, afterRemediations bool) {
-	profileTestFilePath := path.Join(ctx.rootdir, "tests", "assertions", ctx.platform, ctx.product+"-"+ctx.Profile+"-"+ctx.version+".yml")
+func (ctx *e2econtext) assertProfileAssertionFile(
+	t *testing.T, resultList *cmpv1alpha1.ComplianceCheckResultList, afterRemediations bool,
+) {
+	profileTestFilePath := path.Join(ctx.rootdir, "tests", "assertions", ctx.platform,
+		ctx.product+"-"+ctx.Profile+"-"+ctx.version+".yml")
 	_, err := os.Stat(profileTestFilePath)
 	if os.IsNotExist(err) {
 		t.Logf("failed to find profile assertion file %s", profileTestFilePath)
@@ -1050,12 +1055,14 @@ func (ctx *e2econtext) getTestDefinition(rulePath string) ([]byte, error) {
 	if os.IsNotExist(gerr) {
 		// let's check for other files and fail if they don't exist
 		files, err := os.ReadDir(path.Join(rulePath, ruleTestDir))
-		log.Printf("E2E-INFO: No global test file or current version test file found, checking for other versioned files in %s", path.Join(rulePath, ruleTestDir))
+		log.Printf("E2E-INFO: No global test file or current version test file found, "+
+			"checking for other versioned files in %s", path.Join(rulePath, ruleTestDir))
 		if err != nil {
 			return nil, err
 		}
 		if len(files) > 0 {
-			return nil, fmt.Errorf("E2E-FAILURE: the rule directory %s contains versioned files, but none for %s", ruleTestDir, ctx.version)
+			return nil, fmt.Errorf("E2E-FAILURE: the rule directory %s contains versioned files, "+
+				"but none for %s", ruleTestDir, ctx.version)
 		}
 	} else if gerr != nil {
 		return nil, gerr
