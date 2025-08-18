@@ -154,7 +154,8 @@ func cloneContentDir() (string, error) {
 	if tmperr != nil {
 		return "", fmt.Errorf("couldn't create tmpdir: %w", tmperr)
 	}
-	_, cmderr := exec.Command("/usr/bin/git", "clone",
+	ctx := goctx.Background()
+	_, cmderr := exec.CommandContext(ctx, "/usr/bin/git", "clone",
 		"https://github.com/ComplianceAsCode/content.git", dir).CombinedOutput()
 	if cmderr != nil {
 		return "", fmt.Errorf("couldn't clone content: %w", cmderr)
@@ -257,7 +258,7 @@ func (ctx *e2econtext) assertVersion(t *testing.T) {
 	t.Helper()
 	// TODO(jaosorior): Make this pluggable (we might want to use
 	//                  kubectl instead in the future)
-	rawversion, err := exec.Command("oc", "version").Output()
+	rawversion, err := exec.CommandContext(goctx.Background(), "oc", "version").Output()
 	if err != nil {
 		t.Fatalf("E2E-FAILURE: failed get cluster version: %s", err)
 	}
@@ -969,7 +970,7 @@ func (ctx *e2econtext) verifyRule(
 		return "", false, err
 	}
 	//nolint:gosec
-	rulePathBytes, err := exec.Command("find", ctx.benchmarkRoot, "-name", ruleName).Output()
+	rulePathBytes, err := exec.CommandContext(goctx.Background(), "find", ctx.benchmarkRoot, "-name", ruleName).Output()
 	if err != nil {
 		return "", false, err
 	}
