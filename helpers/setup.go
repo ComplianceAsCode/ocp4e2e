@@ -9,7 +9,7 @@ import (
 	"github.com/ComplianceAsCode/ocp4e2e/config"
 )
 
-// setup performs all the necessary setup for the test suite.
+// Setup performs all the necessary setup for the test suite.
 func Setup(tc *config.TestConfig) error {
 	if err := assertContentDirectory(tc); err != nil {
 		return fmt.Errorf("content directory validation failed: %w", err)
