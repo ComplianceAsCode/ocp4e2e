@@ -877,7 +877,8 @@ func (ctx *e2econtext) summarizeSuiteFindings(t *testing.T, suite string) {
 		t.Fatalf("failed to get ComplianceSuite %s: %s", suite, err)
 	}
 
-	for _, scan := range su.Spec.Scans {
+	for i := range su.Spec.Scans {
+		scan := &su.Spec.Scans[i]
 		results := make(map[cmpv1alpha1.ComplianceCheckStatus]int)
 		resultList := &cmpv1alpha1.ComplianceCheckResultList{}
 		label := dynclient.MatchingLabels{cmpv1alpha1.ComplianceScanLabel: scan.Name}
@@ -885,8 +886,8 @@ func (ctx *e2econtext) summarizeSuiteFindings(t *testing.T, suite string) {
 		if err != nil {
 			t.Fatalf("failed to get CompliacneCheckResults for ComplianceScan %s: %s", scan.Name, err)
 		}
-		for _, result := range resultList.Items {
-			results[result.Status]++
+		for i := range resultList.Items {
+			results[resultList.Items[i].Status]++
 		}
 		t.Logf("Scan %s contained %d total checks", scan.Name, len(resultList.Items))
 		for status, number := range results {
@@ -895,11 +896,11 @@ func (ctx *e2econtext) summarizeSuiteFindings(t *testing.T, suite string) {
 		}
 
 		failedWithRemediationList := &cmpv1alpha1.ComplianceCheckResultList{}
-		labels := dynclient.MatchingLabels{
+		matchLabels := dynclient.MatchingLabels{
 			cmpv1alpha1.ComplianceCheckResultStatusLabel:    string(cmpv1alpha1.CheckResultFail),
 			cmpv1alpha1.ComplianceCheckResultHasRemediation: "",
 		}
-		err = ctx.dynclient.List(goctx.TODO(), failedWithRemediationList, labels)
+		err = ctx.dynclient.List(goctx.TODO(), failedWithRemediationList, matchLabels)
 		if err != nil {
 			t.Fatalf("failed to get ComplianceCheckResults with status FAIL and remediations: %s", err)
 		}
@@ -958,7 +959,7 @@ func (ctx *e2econtext) assertProfileAssertionFile(t *testing.T, resultList *cmpv
 
 func (ctx *e2econtext) verifyRule(
 	t *testing.T, result *cmpv1alpha1.ComplianceCheckResult, afterRemediations bool,
-) (string, bool, error) {
+) (remediationPath string, excluded bool, err error) {
 	ruleName, err := ctx.getRuleFolderNameFromResult(result)
 	if err != nil {
 		return "", false, err
