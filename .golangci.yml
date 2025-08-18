@@ -46,6 +46,18 @@ linters:
     - wastedassign
     - whitespace
   settings:
+    depguard:
+      rules:
+        main:
+          allow:
+            - $gostd
+            - github.com/ComplianceAsCode/ocp4e2e
+            - github.com/cenkalti/backoff/v4
+            - github.com/openshift/compliance-operator
+            - github.com/openshift/machine-config-operator
+            - gopkg.in/yaml.v2
+            - k8s.io
+            - sigs.k8s.io
     errcheck:
       check-type-assertions: true
       check-blank: true
