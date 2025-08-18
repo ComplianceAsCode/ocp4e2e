@@ -77,7 +77,6 @@ func TestE2e(t *testing.T) {
 
 	//nolint:nestif
 	if numberOfRemediations > 0 || len(manualRemediations) > 0 {
-
 		t.Run("Wait for Remediations to apply", func(t *testing.T) {
 			// Lets wait for the MachineConfigs to start applying
 			time.Sleep(30 * time.Second)
