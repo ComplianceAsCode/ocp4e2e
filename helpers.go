@@ -20,14 +20,12 @@ import (
 
 	"github.com/ComplianceAsCode/ocp4e2e/resultparser"
 	backoff "github.com/cenkalti/backoff/v4"
-	caolib "github.com/openshift/cluster-authentication-operator/test/library"
 	cmpapis "github.com/openshift/compliance-operator/pkg/apis"
 	cmpv1alpha1 "github.com/openshift/compliance-operator/pkg/apis/compliance/v1alpha1"
 	mcfg "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io"
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
-	netv1 "k8s.io/api/networking/v1"
 	extscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -469,44 +467,7 @@ func (ctx *e2econtext) ensureTestSettings(t *testing.T) {
 	}
 }
 
-func (ctx *e2econtext) ensureIDP(t *testing.T) func() {
-	_, _, cleanups := caolib.AddKeycloakIDP(t, ctx.kubecfg)
 
-	if err := ctx.setIDPNetworkPolicy(t); err != nil {
-		t.Fatalf("failed to ensure networkpolicy for IDP: %s", err)
-	}
-	return func() {
-		t.Logf("Cleaning up IdP")
-		caolib.IDPCleanupWrapper(func() {
-			for _, c := range cleanups {
-				c()
-			}
-		})
-	}
-}
-
-func (ctx *e2econtext) setIDPNetworkPolicy(t *testing.T) error {
-	getNSCmd := `oc get namespaces -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep e2e-test-authentication-operator`
-	rawres, nserr := exec.Command("/bin/bash", "-c", getNSCmd).CombinedOutput()
-	if nserr != nil {
-		return fmt.Errorf("error getting IDP namespace: %w", nserr)
-	}
-	ns := strings.TrimSpace(string(rawres))
-	np := netv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "allow-all-ingress",
-			Namespace: ns,
-		},
-		Spec: netv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{},
-			Ingress:     []netv1.NetworkPolicyIngressRule{},
-			PolicyTypes: []netv1.PolicyType{
-				netv1.PolicyTypeIngress,
-			},
-		},
-	}
-	return ctx.dynclient.Create(goctx.TODO(), &np)
-}
 
 func (ctx *e2econtext) setPoolRollingPolicy(t *testing.T) error {
 	mcfgpools := &mcfgv1.MachineConfigPoolList{}
