@@ -539,7 +539,64 @@ func findNodeRulesByBundle(c dynclient.Client, bundleName string) ([]cmpv1alpha1
 	return nodeRules, nil
 }
 
-// createScanBinding creates a ScanSettingBinding for the given tailored profile.
+// waitForScanCleanup waits for ComplianceSuite and ComplianceCheckResults to
+// be cleaned up after a ScanSettingBinding is deleted.
+func waitForScanCleanup(c dynclient.Client, tc *testConfig.TestConfig, bindingName string) error {
+	// Expected suite name is typically the same as binding name
+	suiteName := bindingName
+
+	log.Printf("Waiting for ComplianceSuite and results cleanup for %s", suiteName)
+
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 60) // 5 minutes max
+	err := backoff.RetryNotify(func() error {
+		// Check if ComplianceSuite still exists
+		suite := &cmpv1alpha1.ComplianceSuite{}
+		err := c.Get(goctx.TODO(), dynclient.ObjectKey{
+			Name:      suiteName,
+			Namespace: tc.OperatorNamespace.Namespace,
+		}, suite)
+
+		if err == nil {
+			return fmt.Errorf("ComplianceSuite %s still exists", suiteName)
+		}
+
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("error checking ComplianceSuite %s: %w", suiteName, err)
+		}
+
+		// Check if any ComplianceCheckResults still exist for this suite
+		resultList := &cmpv1alpha1.ComplianceCheckResultList{}
+		labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
+		if err != nil {
+			return fmt.Errorf("failed to parse label selector: %w", err)
+		}
+		opts := &dynclient.ListOptions{
+			LabelSelector: labelSelector,
+		}
+		err = c.List(goctx.TODO(), resultList, opts)
+		if err != nil {
+			return fmt.Errorf("error listing ComplianceCheckResults for suite %s: %w", suiteName, err)
+		}
+
+		if len(resultList.Items) > 0 {
+			return fmt.Errorf("%d ComplianceCheckResults still exist for suite %s", len(resultList.Items), suiteName)
+		}
+
+		return nil
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("Still waiting for cleanup after %s: %s", d.String(), err)
+	})
+	if err != nil {
+		return fmt.Errorf("timeout waiting for scan cleanup: %w", err)
+	}
+
+	log.Printf("Scan cleanup completed for %s", suiteName)
+	return nil
+}
+
+// createScanBinding creates a ScanSettingBinding for the given tailored
+// profile If a binding already exists, it will be deleted first to trigger a
+// new scan.
 func createScanBinding(c dynclient.Client, tc *testConfig.TestConfig, bindingName, profileName string) error {
 	binding := &cmpv1alpha1.ScanSettingBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -560,8 +617,34 @@ func createScanBinding(c dynclient.Client, tc *testConfig.TestConfig, bindingNam
 		},
 	}
 
+	// Check if the binding already exists and delete it if it does
+	existingBinding := &cmpv1alpha1.ScanSettingBinding{}
+	err := c.Get(goctx.TODO(), dynclient.ObjectKey{
+		Name:      bindingName,
+		Namespace: tc.OperatorNamespace.Namespace,
+	}, existingBinding)
+
+	if err == nil {
+		// Binding exists, delete it first
+		log.Printf("Deleting existing ScanSettingBinding %s to trigger new scan\n", bindingName)
+		err = c.Delete(goctx.TODO(), existingBinding)
+		if err != nil {
+			return fmt.Errorf("failed to delete existing %s scan binding: %w", bindingName, err)
+		}
+
+		// Wait for ComplianceSuite and ComplianceCheckResults to be cleaned up
+		err = waitForScanCleanup(c, tc, bindingName)
+		if err != nil {
+			return fmt.Errorf("failed to wait for scan cleanup after deleting %s: %w", bindingName, err)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		// If error is not "not found", return the error
+		return fmt.Errorf("failed to check if %s scan binding exists: %w", bindingName, err)
+	}
+
+	// Create the new binding
 	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 180)
-	err := backoff.RetryNotify(func() error {
+	err = backoff.RetryNotify(func() error {
 		return c.Create(goctx.TODO(), binding)
 	}, bo, func(err error, d time.Duration) {
 		fmt.Printf("Couldn't create %s binding after %s: %s\n", bindingName, d.String(), err)
@@ -569,6 +652,7 @@ func createScanBinding(c dynclient.Client, tc *testConfig.TestConfig, bindingNam
 	if err != nil {
 		return fmt.Errorf("failed to create %s scan binding: %w", bindingName, err)
 	}
+	log.Printf("Created new ScanSettingBinding %s\n", bindingName)
 	return nil
 }
 
