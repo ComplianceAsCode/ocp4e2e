@@ -635,7 +635,7 @@ func (ctx *e2econtext) waitForMachinePoolUpdate(t *testing.T, name string) {
 
 func (ctx *e2econtext) doRescan(t *testing.T, s string) {
 	scanList := &cmpv1alpha1.ComplianceScanList{}
-	// nolint:errcheck
+	//nolint:errcheck
 	labelSelector, _ := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + s)
 	opts := &dynclient.ListOptions{
 		LabelSelector: labelSelector,
@@ -701,7 +701,7 @@ func (ctx *e2econtext) doRescan(t *testing.T, s string) {
 
 func (ctx *e2econtext) getRemediationsForSuite(t *testing.T, s string) int {
 	remList := &cmpv1alpha1.ComplianceRemediationList{}
-	// nolint:errcheck
+	//nolint:errcheck
 	labelSelector, _ := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + s)
 	opts := &dynclient.ListOptions{
 		LabelSelector: labelSelector,
@@ -723,7 +723,7 @@ func (ctx *e2econtext) getRemediationsForSuite(t *testing.T, s string) int {
 
 func (ctx *e2econtext) suiteHasRemediationsWithUnmetDependencies(t *testing.T, s string) bool {
 	remList := &cmpv1alpha1.ComplianceRemediationList{}
-	// nolint:errcheck
+	//nolint:errcheck
 	labelSelector, _ := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + s + "," +
 		cmpv1alpha1.RemediationHasUnmetDependenciesLabel)
 	opts := &dynclient.ListOptions{
@@ -968,7 +968,7 @@ func (ctx *e2econtext) verifyRule(
 	if err != nil {
 		return "", false, err
 	}
-	// nolint:gosec
+	//nolint:gosec
 	rulePathBytes, err := exec.Command("find", ctx.benchmarkRoot, "-name", ruleName).Output()
 	if err != nil {
 		return "", false, err
@@ -1001,7 +1001,7 @@ func (ctx *e2econtext) verifyRule(
 	}
 
 	// Initial run
-	// nolint:nestif
+	//nolint:nestif
 	if !afterRemediations {
 		if err := verifyRuleResult(result, test.DefaultResult, test, ruleResultName, "default"); err != nil {
 			return remPath, isExcluded(test.ExcludeFromCount), err
