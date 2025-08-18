@@ -35,7 +35,9 @@ func TestE2e(t *testing.T) {
 		ctx.ensureTestProfileBundle(t)
 		ctx.waitForValidTestProfileBundle(t)
 		ctx.ensureTestSettings(t)
-		ctx.setPoolRollingPolicy(t)
+		if err := ctx.setPoolRollingPolicy(t); err != nil {
+			t.Fatalf("failed to set pool rolling policy: %s", err)
+		}
 	})
 
 	// Remediations
