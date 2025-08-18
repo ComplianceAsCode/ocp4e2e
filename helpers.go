@@ -102,7 +102,7 @@ type e2econtext struct {
 	kubecfg            *rest.Config
 }
 
-var errRuleAssertionMissing = errors.New("Rule assertion missing")
+var errRuleAssertionMissing = errors.New("rule assertion missing")
 
 func init() {
 	flag.StringVar(&profile, "profile", "", "The profile to check")
@@ -1126,7 +1126,7 @@ func matchFoundResultToExpectation(
 	if resultStr, ok := expectedResult.(string); ok {
 		p, perr := resultparser.ParseRoleResultEval(resultStr)
 		if perr != nil {
-			return false, fmt.Errorf("Error parsing result evaluator: %w", perr)
+			return false, fmt.Errorf("error parsing result evaluator: %w", perr)
 		}
 		return p.Eval(string(foundResult.Status)), nil
 	}
@@ -1143,7 +1143,7 @@ func matchFoundResultToExpectation(
 			}
 			p, perr := resultparser.ParseRoleResultEval(roleResult)
 			if perr != nil {
-				return false, fmt.Errorf("Error parsing result evaluator: %w", perr)
+				return false, fmt.Errorf("error parsing result evaluator: %w", perr)
 			}
 			// NOTE(jaosorior): Normally, the results will have a reference
 			// to the role they apply to in the name. This is hacky...
