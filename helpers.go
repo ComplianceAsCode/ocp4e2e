@@ -467,8 +467,6 @@ func (ctx *e2econtext) ensureTestSettings(t *testing.T) {
 	}
 }
 
-
-
 func (ctx *e2econtext) setPoolRollingPolicy(t *testing.T) error {
 	mcfgpools := &mcfgv1.MachineConfigPoolList{}
 	if err := ctx.dynclient.List(goctx.TODO(), mcfgpools); err != nil {
@@ -859,14 +857,14 @@ func (ctx *e2econtext) verifyCheckResultsForSuite(
 		manualRemediations = append(manualRemediations, key)
 	}
 
-    // Print any missing assertion rule entries
-    if len(ctx.missingAssertions) != 0 {
-        missingAssertionBytes, err := yaml.Marshal(ctx.missingAssertions)
-        if err != nil {
-            t.Fatalf("failed to marshal missing rule assertion entries: %s", err)
-        }
-        t.Logf("Missing rule assertion entries:\n%s", string(missingAssertionBytes))
-    }
+	// Print any missing assertion rule entries
+	if len(ctx.missingAssertions) != 0 {
+		missingAssertionBytes, err := yaml.Marshal(ctx.missingAssertions)
+		if err != nil {
+			t.Fatalf("failed to marshal missing rule assertion entries: %s", err)
+		}
+		t.Logf("Missing rule assertion entries:\n%s", string(missingAssertionBytes))
+	}
 
 	return len(resList.Items) - len(excludeList), manualRemediations
 }
@@ -1103,7 +1101,7 @@ func verifyRuleResult(
 	return nil
 }
 
-// Will exclude the rule from counting if excludedString has values
+// Will exclude the rule from counting if excludedString has values.
 func isExcluded(exclude interface{}) bool {
 	if excludedString, ok := exclude.(string); ok {
 		if excludedString != "FALSE" {
