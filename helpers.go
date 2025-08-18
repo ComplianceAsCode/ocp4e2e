@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ComplianceAsCode/ocp4e2e/resultparser"
 	backoff "github.com/cenkalti/backoff/v4"
 	cmpapis "github.com/openshift/compliance-operator/pkg/apis"
 	cmpv1alpha1 "github.com/openshift/compliance-operator/pkg/apis/compliance/v1alpha1"
@@ -40,6 +39,8 @@ import (
 	"k8s.io/client-go/rest"
 	dynclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
+
+	"github.com/ComplianceAsCode/ocp4e2e/resultparser"
 )
 
 const (
