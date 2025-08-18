@@ -102,7 +102,7 @@ type e2econtext struct {
 	kubecfg            *rest.Config
 }
 
-var ruleAssertionMissingError = errors.New("Rule assertion missing")
+var errRuleAssertionMissing = errors.New("Rule assertion missing")
 
 func init() {
 	flag.StringVar(&profile, "profile", "", "The profile to check")
@@ -408,7 +408,7 @@ func (ctx *e2econtext) waitForValidTestProfileBundle(t *testing.T) {
 			return fmt.Errorf("%s ProfileBundle is in %s state", found.Name, found.Status.DataStreamStatus)
 		}
 		return nil
-	}, bo, func(err error, d time.Duration) {
+	}, bo, func(err error, _ time.Duration) {
 		fmt.Printf("waiting for ProfileBundle to parse: %s\n", err)
 	})
 	if err != nil {
@@ -588,7 +588,7 @@ func (ctx *e2econtext) waitForComplianceSuite(t *testing.T, suiteName string) {
 			}
 		}
 		return nil
-	}, bo, func(e error, ti time.Duration) {
+	}, bo, func(e error, _ time.Duration) {
 		t.Logf("ComplianceSuite %s is not DONE: %s", suiteName, e)
 	})
 	if err != nil {
@@ -837,7 +837,7 @@ func (ctx *e2econtext) verifyCheckResultsForSuite(
 		}
 		if err != nil {
 			t.Error(err)
-			if errors.Is(err, ruleAssertionMissingError) {
+			if errors.Is(err, errRuleAssertionMissing) {
 				if missingRuleTest, ok := ctx.missingAssertions[check.Name]; ok {
 					missingRuleTest.ResultAfterRemediation = &check.Status
 					ctx.missingAssertions[check.Name] = missingRuleTest
@@ -933,7 +933,6 @@ func (ctx *e2econtext) assertProfileAssertionFile(
 	// do not fail on not found, we will print out the file according to the test result
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("failed to read profile assertion file: %s", err)
-		ctx.profileAssertExist = false
 	} else if os.IsNotExist(err) {
 		t.Logf("No profile assertion file found, you should create %s to assert the test results", profileTestFilePath)
 		ctx.profileAssertExist = false
@@ -995,7 +994,7 @@ func (ctx *e2econtext) verifyRule(
 	} else {
 		var ok bool
 		if test, ok = ctx.profileAssert.RuleResults[ruleResultName]; !ok {
-			err := fmt.Errorf("E2E-Error: %s: %w", ruleResultName, ruleAssertionMissingError)
+			err := fmt.Errorf("E2E-Error: %s: %w", ruleResultName, errRuleAssertionMissing)
 
 			return remPath, false, err
 		}
