@@ -18,16 +18,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ComplianceAsCode/ocp4e2e/resultparser"
 	backoff "github.com/cenkalti/backoff/v4"
-	caolib "github.com/openshift/cluster-authentication-operator/test/library"
 	cmpapis "github.com/openshift/compliance-operator/pkg/apis"
 	cmpv1alpha1 "github.com/openshift/compliance-operator/pkg/apis/compliance/v1alpha1"
 	mcfg "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io"
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
-	netv1 "k8s.io/api/networking/v1"
 	extscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,6 +39,8 @@ import (
 	"k8s.io/client-go/rest"
 	dynclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
+
+	"github.com/ComplianceAsCode/ocp4e2e/resultparser"
 )
 
 const (
@@ -104,7 +103,7 @@ type e2econtext struct {
 	kubecfg            *rest.Config
 }
 
-var ruleAssertionMissingError = errors.New("Rule assertion missing")
+var errRuleAssertionMissing = errors.New("rule assertion missing")
 
 func init() {
 	flag.StringVar(&profile, "profile", "", "The profile to check")
@@ -113,7 +112,8 @@ func init() {
 	flag.StringVar(&contentImage, "content-image", "", "The path to the image with the content to test")
 	flag.BoolVar(&installOperator, "install-operator", true, "Should the test-code install the operator or not? "+
 		"This is useful if you need to test with your own deployment of the operator")
-	flag.BoolVar(&bypassRemediations, "bypass-remediations", false, "Do not apply remedations and summarize results after the first scan")
+	flag.BoolVar(&bypassRemediations, "bypass-remediations", false,
+		"Do not apply remedations and summarize results after the first scan")
 }
 
 func newE2EContext(t *testing.T) *e2econtext {
@@ -155,7 +155,8 @@ func cloneContentDir() (string, error) {
 	if tmperr != nil {
 		return "", fmt.Errorf("couldn't create tmpdir: %w", tmperr)
 	}
-	_, cmderr := exec.Command("/usr/bin/git", "clone",
+	ctx := goctx.Background()
+	_, cmderr := exec.CommandContext(ctx, "/usr/bin/git", "clone",
 		"https://github.com/ComplianceAsCode/content.git", dir).CombinedOutput()
 	if cmderr != nil {
 		return "", fmt.Errorf("couldn't clone content: %w", cmderr)
@@ -258,7 +259,7 @@ func (ctx *e2econtext) assertVersion(t *testing.T) {
 	t.Helper()
 	// TODO(jaosorior): Make this pluggable (we might want to use
 	//                  kubectl instead in the future)
-	rawversion, err := exec.Command("oc", "version").Output()
+	rawversion, err := exec.CommandContext(goctx.Background(), "oc", "version").Output()
 	if err != nil {
 		t.Fatalf("E2E-FAILURE: failed get cluster version: %s", err)
 	}
@@ -409,7 +410,7 @@ func (ctx *e2econtext) waitForValidTestProfileBundle(t *testing.T) {
 			return fmt.Errorf("%s ProfileBundle is in %s state", found.Name, found.Status.DataStreamStatus)
 		}
 		return nil
-	}, bo, func(err error, d time.Duration) {
+	}, bo, func(err error, _ time.Duration) {
 		fmt.Printf("waiting for ProfileBundle to parse: %s\n", err)
 	})
 	if err != nil {
@@ -467,45 +468,6 @@ func (ctx *e2econtext) ensureTestSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to ensure auto-apply scanSettings: %s", err)
 	}
-}
-
-func (ctx *e2econtext) ensureIDP(t *testing.T) func() {
-	_, _, cleanups := caolib.AddKeycloakIDP(t, ctx.kubecfg)
-
-	if err := ctx.setIDPNetworkPolicy(t); err != nil {
-		t.Fatalf("failed to ensure networkpolicy for IDP: %s", err)
-	}
-	return func() {
-		t.Logf("Cleaning up IdP")
-		caolib.IDPCleanupWrapper(func() {
-			for _, c := range cleanups {
-				c()
-			}
-		})
-	}
-}
-
-func (ctx *e2econtext) setIDPNetworkPolicy(t *testing.T) error {
-	getNSCmd := `oc get namespaces -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep e2e-test-authentication-operator`
-	rawres, nserr := exec.Command("/bin/bash", "-c", getNSCmd).CombinedOutput()
-	if nserr != nil {
-		return fmt.Errorf("error getting IDP namespace: %w", nserr)
-	}
-	ns := strings.TrimSpace(string(rawres))
-	np := netv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "allow-all-ingress",
-			Namespace: ns,
-		},
-		Spec: netv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{},
-			Ingress:     []netv1.NetworkPolicyIngressRule{},
-			PolicyTypes: []netv1.PolicyType{
-				netv1.PolicyTypeIngress,
-			},
-		},
-	}
-	return ctx.dynclient.Create(goctx.TODO(), &np)
 }
 
 func (ctx *e2econtext) setPoolRollingPolicy(t *testing.T) error {
@@ -628,7 +590,7 @@ func (ctx *e2econtext) waitForComplianceSuite(t *testing.T, suiteName string) {
 			}
 		}
 		return nil
-	}, bo, func(e error, ti time.Duration) {
+	}, bo, func(e error, _ time.Duration) {
 		t.Logf("ComplianceSuite %s is not DONE: %s", suiteName, e)
 	})
 	if err != nil {
@@ -675,7 +637,7 @@ func (ctx *e2econtext) waitForMachinePoolUpdate(t *testing.T, name string) {
 
 func (ctx *e2econtext) doRescan(t *testing.T, s string) {
 	scanList := &cmpv1alpha1.ComplianceScanList{}
-	// nolint:errcheck
+	//nolint:errcheck
 	labelSelector, _ := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + s)
 	opts := &dynclient.ListOptions{
 		LabelSelector: labelSelector,
@@ -726,7 +688,6 @@ func (ctx *e2econtext) doRescan(t *testing.T, s string) {
 		// The scan has been reset, we're good to go
 		return true, nil
 	})
-
 	// timeout error
 	if err != nil {
 		t.Fatalf("Timed out waiting for scan to be reset: %s", err)
@@ -741,7 +702,7 @@ func (ctx *e2econtext) doRescan(t *testing.T, s string) {
 
 func (ctx *e2econtext) getRemediationsForSuite(t *testing.T, s string) int {
 	remList := &cmpv1alpha1.ComplianceRemediationList{}
-	// nolint:errcheck
+	//nolint:errcheck
 	labelSelector, _ := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + s)
 	opts := &dynclient.ListOptions{
 		LabelSelector: labelSelector,
@@ -763,7 +724,7 @@ func (ctx *e2econtext) getRemediationsForSuite(t *testing.T, s string) int {
 
 func (ctx *e2econtext) suiteHasRemediationsWithUnmetDependencies(t *testing.T, s string) bool {
 	remList := &cmpv1alpha1.ComplianceRemediationList{}
-	// nolint:errcheck
+	//nolint:errcheck
 	labelSelector, _ := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + s + "," +
 		cmpv1alpha1.RemediationHasUnmetDependenciesLabel)
 	opts := &dynclient.ListOptions{
@@ -877,7 +838,7 @@ func (ctx *e2econtext) verifyCheckResultsForSuite(
 		}
 		if err != nil {
 			t.Error(err)
-			if errors.Is(err, ruleAssertionMissingError) {
+			if errors.Is(err, errRuleAssertionMissing) {
 				if missingRuleTest, ok := ctx.missingAssertions[check.Name]; ok {
 					missingRuleTest.ResultAfterRemediation = &check.Status
 					ctx.missingAssertions[check.Name] = missingRuleTest
@@ -898,14 +859,14 @@ func (ctx *e2econtext) verifyCheckResultsForSuite(
 		manualRemediations = append(manualRemediations, key)
 	}
 
-    // Print any missing assertion rule entries
-    if len(ctx.missingAssertions) != 0 {
-        missingAssertionBytes, err := yaml.Marshal(ctx.missingAssertions)
-        if err != nil {
-            t.Fatalf("failed to marshal missing rule assertion entries: %s", err)
-        }
-        t.Logf("Missing rule assertion entries:\n%s", string(missingAssertionBytes))
-    }
+	// Print any missing assertion rule entries
+	if len(ctx.missingAssertions) != 0 {
+		missingAssertionBytes, err := yaml.Marshal(ctx.missingAssertions)
+		if err != nil {
+			t.Fatalf("failed to marshal missing rule assertion entries: %s", err)
+		}
+		t.Logf("Missing rule assertion entries:\n%s", string(missingAssertionBytes))
+	}
 
 	return len(resList.Items) - len(excludeList), manualRemediations
 }
@@ -918,7 +879,8 @@ func (ctx *e2econtext) summarizeSuiteFindings(t *testing.T, suite string) {
 		t.Fatalf("failed to get ComplianceSuite %s: %s", suite, err)
 	}
 
-	for _, scan := range su.Spec.Scans {
+	for i := range su.Spec.Scans {
+		scan := &su.Spec.Scans[i]
 		results := make(map[cmpv1alpha1.ComplianceCheckStatus]int)
 		resultList := &cmpv1alpha1.ComplianceCheckResultList{}
 		label := dynclient.MatchingLabels{cmpv1alpha1.ComplianceScanLabel: scan.Name}
@@ -926,8 +888,8 @@ func (ctx *e2econtext) summarizeSuiteFindings(t *testing.T, suite string) {
 		if err != nil {
 			t.Fatalf("failed to get CompliacneCheckResults for ComplianceScan %s: %s", scan.Name, err)
 		}
-		for _, result := range resultList.Items {
-			results[result.Status]++
+		for i := range resultList.Items {
+			results[resultList.Items[i].Status]++
 		}
 		t.Logf("Scan %s contained %d total checks", scan.Name, len(resultList.Items))
 		for status, number := range results {
@@ -936,15 +898,16 @@ func (ctx *e2econtext) summarizeSuiteFindings(t *testing.T, suite string) {
 		}
 
 		failedWithRemediationList := &cmpv1alpha1.ComplianceCheckResultList{}
-		labels := dynclient.MatchingLabels{
+		matchLabels := dynclient.MatchingLabels{
 			cmpv1alpha1.ComplianceCheckResultStatusLabel:    string(cmpv1alpha1.CheckResultFail),
 			cmpv1alpha1.ComplianceCheckResultHasRemediation: "",
 		}
-		err = ctx.dynclient.List(goctx.TODO(), failedWithRemediationList, labels)
+		err = ctx.dynclient.List(goctx.TODO(), failedWithRemediationList, matchLabels)
 		if err != nil {
 			t.Fatalf("failed to get ComplianceCheckResults with status FAIL and remediations: %s", err)
 		}
-		t.Logf("Scan %s contained %d checks that failed, but have a remediation available", scan.Name, len(failedWithRemediationList.Items))
+		t.Logf("Scan %s contained %d checks that failed, but have a remediation available",
+			scan.Name, len(failedWithRemediationList.Items))
 	}
 	// print out the profile assertion file if it doesn't exist
 	if !ctx.profileAssertExist && ctx.profileAssert.RuleResults != nil {
@@ -956,8 +919,11 @@ func (ctx *e2econtext) summarizeSuiteFindings(t *testing.T, suite string) {
 	}
 }
 
-func (ctx *e2econtext) assertProfileAssertionFile(t *testing.T, resultList *cmpv1alpha1.ComplianceCheckResultList, afterRemediations bool) {
-	profileTestFilePath := path.Join(ctx.rootdir, "tests", "assertions", ctx.platform, ctx.product+"-"+ctx.Profile+"-"+ctx.version+".yml")
+func (ctx *e2econtext) assertProfileAssertionFile(
+	t *testing.T, resultList *cmpv1alpha1.ComplianceCheckResultList, afterRemediations bool,
+) {
+	profileTestFilePath := path.Join(ctx.rootdir, "tests", "assertions", ctx.platform,
+		ctx.product+"-"+ctx.Profile+"-"+ctx.version+".yml")
 	_, err := os.Stat(profileTestFilePath)
 	if os.IsNotExist(err) {
 		t.Logf("failed to find profile assertion file %s", profileTestFilePath)
@@ -968,7 +934,6 @@ func (ctx *e2econtext) assertProfileAssertionFile(t *testing.T, resultList *cmpv
 	// do not fail on not found, we will print out the file according to the test result
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("failed to read profile assertion file: %s", err)
-		ctx.profileAssertExist = false
 	} else if os.IsNotExist(err) {
 		t.Logf("No profile assertion file found, you should create %s to assert the test results", profileTestFilePath)
 		ctx.profileAssertExist = false
@@ -997,15 +962,40 @@ func (ctx *e2econtext) assertProfileAssertionFile(t *testing.T, resultList *cmpv
 	ctx.profileAssert = *profileTest
 }
 
+func (ctx *e2econtext) getRuleTest(rulePath, ruleResultName, _ string) (*RuleTest, error) {
+	if ctx.profileAssertExist {
+		test, ok := ctx.profileAssert.RuleResults[ruleResultName]
+		if !ok {
+			return nil, fmt.Errorf("E2E-Error: %s: %w", ruleResultName, errRuleAssertionMissing)
+		}
+		return &test, nil
+	}
+
+	buf, err := ctx.getTestDefinition(rulePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// There's no test file, so no need to verify
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	test := RuleTest{}
+	if err := yaml.Unmarshal(buf, &test); err != nil {
+		return nil, err
+	}
+	return &test, nil
+}
+
 func (ctx *e2econtext) verifyRule(
 	t *testing.T, result *cmpv1alpha1.ComplianceCheckResult, afterRemediations bool,
-) (string, bool, error) {
+) (remediationPath string, excluded bool, err error) {
 	ruleName, err := ctx.getRuleFolderNameFromResult(result)
 	if err != nil {
 		return "", false, err
 	}
-	// nolint:gosec
-	rulePathBytes, err := exec.Command("find", ctx.benchmarkRoot, "-name", ruleName).Output()
+	//nolint:gosec
+	rulePathBytes, err := exec.CommandContext(goctx.Background(), "find", ctx.benchmarkRoot, "-name", ruleName).Output()
 	if err != nil {
 		return "", false, err
 	}
@@ -1013,45 +1003,31 @@ func (ctx *e2econtext) verifyRule(
 	rulePath := strings.Trim(string(rulePathBytes), "\n")
 
 	remPath := ctx.getManualRemediationPath(rulePath)
-	test := RuleTest{}
-	if !ctx.profileAssertExist {
-		buf, err := ctx.getTestDefinition(rulePath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				// There's no test file, so no need to verify
-				return "", false, nil
-			}
-			return "", false, err
-		}
-
-		if err := yaml.Unmarshal(buf, &test); err != nil {
-			return "", false, err
-		}
-	} else {
-		var ok bool
-		if test, ok = ctx.profileAssert.RuleResults[ruleResultName]; !ok {
-			err := fmt.Errorf("E2E-Error: %s: %w", ruleResultName, ruleAssertionMissingError)
-
-			return remPath, false, err
-		}
+	test, err := ctx.getRuleTest(rulePath, ruleResultName, remPath)
+	if err != nil {
+		return "", false, err
+	}
+	if test == nil {
+		// No test file found, no need to verify
+		return "", false, nil
 	}
 
 	// Initial run
-	// nolint:nestif
+	//nolint:nestif
 	if !afterRemediations {
-		if err := verifyRuleResult(result, test.DefaultResult, test, ruleResultName, "default"); err != nil {
+		if err := verifyRuleResult(result, test.DefaultResult, *test, ruleResultName, "default"); err != nil {
 			return remPath, isExcluded(test.ExcludeFromCount), err
 		}
 	} else {
 		// after remediations
 		// If we expect a change after remediation is applied, let's test for it
 		if test.ResultAfterRemediation != nil {
-			if err := verifyRuleResult(result, test.ResultAfterRemediation, test, ruleResultName, "remediated"); err != nil {
+			if err := verifyRuleResult(result, test.ResultAfterRemediation, *test, ruleResultName, "remediated"); err != nil {
 				return remPath, isExcluded(test.ExcludeFromCount), err
 			}
 		} else {
 			// Check that the default didn't change
-			if err := verifyRuleResult(result, test.DefaultResult, test, ruleResultName, "default"); err != nil {
+			if err := verifyRuleResult(result, test.DefaultResult, *test, ruleResultName, "default"); err != nil {
 				return remPath, isExcluded(test.ExcludeFromCount), err
 			}
 		}
@@ -1090,12 +1066,14 @@ func (ctx *e2econtext) getTestDefinition(rulePath string) ([]byte, error) {
 	if os.IsNotExist(gerr) {
 		// let's check for other files and fail if they don't exist
 		files, err := os.ReadDir(path.Join(rulePath, ruleTestDir))
-		log.Printf("E2E-INFO: No global test file or current version test file found, checking for other versioned files in %s", path.Join(rulePath, ruleTestDir))
+		log.Printf("E2E-INFO: No global test file or current version test file found, "+
+			"checking for other versioned files in %s", path.Join(rulePath, ruleTestDir))
 		if err != nil {
 			return nil, err
 		}
 		if len(files) > 0 {
-			return nil, fmt.Errorf("E2E-FAILURE: the rule directory %s contains versioned files, but none for %s", ruleTestDir, ctx.version)
+			return nil, fmt.Errorf("E2E-FAILURE: the rule directory %s contains versioned files, "+
+				"but none for %s", ruleTestDir, ctx.version)
 		}
 	} else if gerr != nil {
 		return nil, gerr
@@ -1142,7 +1120,7 @@ func verifyRuleResult(
 	return nil
 }
 
-// Will exclude the rule from counting if excludedString has values
+// Will exclude the rule from counting if excludedString has values.
 func isExcluded(exclude interface{}) bool {
 	if excludedString, ok := exclude.(string); ok {
 		if excludedString != "FALSE" {
@@ -1159,7 +1137,7 @@ func matchFoundResultToExpectation(
 	if resultStr, ok := expectedResult.(string); ok {
 		p, perr := resultparser.ParseRoleResultEval(resultStr)
 		if perr != nil {
-			return false, fmt.Errorf("Error parsing result evaluator: %w", perr)
+			return false, fmt.Errorf("error parsing result evaluator: %w", perr)
 		}
 		return p.Eval(string(foundResult.Status)), nil
 	}
@@ -1176,7 +1154,7 @@ func matchFoundResultToExpectation(
 			}
 			p, perr := resultparser.ParseRoleResultEval(roleResult)
 			if perr != nil {
-				return false, fmt.Errorf("Error parsing result evaluator: %w", perr)
+				return false, fmt.Errorf("error parsing result evaluator: %w", perr)
 			}
 			// NOTE(jaosorior): Normally, the results will have a reference
 			// to the role they apply to in the name. This is hacky...

@@ -10,7 +10,7 @@ TEST_FLAGS?=-v -timeout 120m
 INSTALL_OPERATOR?=true
 BYPASS_REMEDIATIONS?=false
 
-GOLANGCI_LINT_VERSION = v1.40.1
+GOLANGCI_LINT_VERSION=latest
 BUILD_DIR := build
 PLATFORM?=ocp
 
@@ -39,14 +39,25 @@ verify: verify-go-lint ## Run all verification targets
 verify-go-lint: $(BUILD_DIR)/golangci-lint ## Verify the golang code by linting
 	$(BUILD_DIR)/golangci-lint run
 
+.PHONY: fmt
+fmt: ## Format Go code using gofmt
+	find . -name '*.go' -not -path './vendor/*' -exec gofmt -s -w {} \;
+
+.PHONY: fumpt
+fumpt: $(BUILD_DIR)/gofumpt ## Format Go code using gofumpt (stricter than gofmt)
+	find . -name '*.go' -not -path './vendor/*' -exec $(BUILD_DIR)/gofumpt -w {} \;
+
 $(BUILD_DIR)/golangci-lint: $(BUILD_DIR)
 	export \
 		VERSION=$(GOLANGCI_LINT_VERSION) \
 		URL=https://raw.githubusercontent.com/golangci/golangci-lint \
 		BINDIR=$(BUILD_DIR) && \
-	curl -sfL $$URL/$$VERSION/install.sh | sh -s $$VERSION
+	curl -sfL $$URL/HEAD/install.sh | sh -s $$VERSION
 	$(BUILD_DIR)/golangci-lint version
 	$(BUILD_DIR)/golangci-lint linters
+
+$(BUILD_DIR)/gofumpt: $(BUILD_DIR)
+	GOBIN=$(PWD)/$(BUILD_DIR) go install mvdan.cc/gofumpt@latest
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)

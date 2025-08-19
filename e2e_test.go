@@ -35,7 +35,9 @@ func TestE2e(t *testing.T) {
 		ctx.ensureTestProfileBundle(t)
 		ctx.waitForValidTestProfileBundle(t)
 		ctx.ensureTestSettings(t)
-		ctx.setPoolRollingPolicy(t)
+		if err := ctx.setPoolRollingPolicy(t); err != nil {
+			t.Fatalf("failed to set pool rolling policy: %s", err)
+		}
 	})
 
 	// Remediations
@@ -73,9 +75,8 @@ func TestE2e(t *testing.T) {
 		return
 	}
 
-	// nolint:nestif
+	//nolint:nestif
 	if numberOfRemediations > 0 || len(manualRemediations) > 0 {
-
 		t.Run("Wait for Remediations to apply", func(t *testing.T) {
 			// Lets wait for the MachineConfigs to start applying
 			time.Sleep(30 * time.Second)
