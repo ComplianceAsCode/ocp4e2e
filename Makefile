@@ -33,7 +33,11 @@ e2e-node: ## Run only node compliance tests
 
 .PHONY: e2e-profile
 e2e-profile: ## Run TestProfile test only
-	set -o pipefail; go test $(TEST_FLAGS) . -run=TestProfile -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) | tee .e2e-profile-test-results.out
+	set -o pipefail; go test $(TEST_FLAGS) . -run=^TestProfile$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) | tee .e2e-profile-test-results.out
+
+.PHONY: e2e-profile-remediations
+e2e-profile-remediations: ## Run TestProfile test only
+	set -o pipefail; go test $(TEST_FLAGS) . -run=^TestProfileRemediations$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) | tee .e2e-profile-test-results.out
 
 .PHONY: help
 help: ## Show this help screen
