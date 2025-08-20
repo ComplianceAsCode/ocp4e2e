@@ -789,8 +789,14 @@ func VerifyNodeScanResults(tc *testConfig.TestConfig, c dynclient.Client, suiteN
 
 // assertScanResults verifies scan results against expected assertions from YAML files.
 func assertScanResults(tc *testConfig.TestConfig, resultList *cmpv1alpha1.ComplianceCheckResultList, scanType string) {
-	// For scan assertions, we use the simple file naming convention
-	assertionFile := fmt.Sprintf("%s-%s-%s-rule-assertions.yaml", tc.Platform, tc.Version, scanType)
+	var assertionFile string
+	if tc.Profile != "" {
+		assertionFile = fmt.Sprintf("%s-%s.yaml", tc.Profile, tc.Version)
+	} else {
+		// For scan assertions, we use the simple file naming convention
+		assertionFile = fmt.Sprintf("%s-%s-%s-rule-assertions.yaml", tc.Platform, tc.Version, scanType)
+	}
+
 	assertResultsWithFileGeneration(tc, resultList, assertionFile, false)
 }
 
