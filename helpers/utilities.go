@@ -594,10 +594,15 @@ func waitForScanCleanup(c dynclient.Client, tc *testConfig.TestConfig, bindingNa
 	return nil
 }
 
-// createScanBinding creates a ScanSettingBinding for the given tailored
-// profile If a binding already exists, it will be deleted first to trigger a
-// new scan.
-func createScanBinding(c dynclient.Client, tc *testConfig.TestConfig, bindingName, profileName string) error {
+// CreateScanBinding creates a ScanSettingBinding for the given profile.
+// If a binding already exists, it will be deleted first to trigger a new scan.
+func CreateScanBinding(
+	c dynclient.Client,
+	tc *testConfig.TestConfig,
+	bindingName, profileName,
+	profileKind,
+	scanSettingName string,
+) error {
 	binding := &cmpv1alpha1.ScanSettingBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      bindingName,
@@ -606,12 +611,12 @@ func createScanBinding(c dynclient.Client, tc *testConfig.TestConfig, bindingNam
 		SettingsRef: &cmpv1alpha1.NamedObjectReference{
 			APIGroup: "compliance.openshift.io/v1alpha1",
 			Kind:     "ScanSetting",
-			Name:     tc.E2eSettings,
+			Name:     scanSettingName,
 		},
 		Profiles: []cmpv1alpha1.NamedObjectReference{
 			{
 				APIGroup: "compliance.openshift.io/v1alpha1",
-				Kind:     "TailoredProfile",
+				Kind:     profileKind,
 				Name:     profileName,
 			},
 		},
@@ -658,7 +663,7 @@ func createScanBinding(c dynclient.Client, tc *testConfig.TestConfig, bindingNam
 
 // CreatePlatformScanBinding creates a ScanSettingBinding for the platform rules.
 func CreatePlatformScanBinding(tc *testConfig.TestConfig, c dynclient.Client) error {
-	return createScanBinding(c, tc, "platform-scan-binding", "platform")
+	return CreateScanBinding(c, tc, "platform-scan-binding", "platform", "TailoredProfile", tc.E2eSettings)
 }
 
 // CreateNodeScanBinding creates a ScanSettingBinding for the node rules using
@@ -753,8 +758,8 @@ func WaitForComplianceSuite(tc *testConfig.TestConfig, c dynclient.Client, suite
 	return nil
 }
 
-// verifyScanResults verifies the results of a scan against expected assertions.
-func verifyScanResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName, scanType string) error {
+// VerifyScanResults verifies the results of a scan against expected assertions.
+func VerifyScanResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName, scanType string) error {
 	resultList := &cmpv1alpha1.ComplianceCheckResultList{}
 	labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
 	if err != nil {
@@ -772,14 +777,14 @@ func verifyScanResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName,
 	return nil
 }
 
-// verifyPlatformScanResults verifies the results of the platform scan against expected assertions.
+// VerifyPlatformScanResults verifies the results of the platform scan against expected assertions.
 func VerifyPlatformScanResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
-	return verifyScanResults(tc, c, suiteName, "platform")
+	return VerifyScanResults(tc, c, suiteName, "platform")
 }
 
-// verifyNodeScanResults verifies the results of the node scan against expected assertions.
+// VerifyNodeScanResults verifies the results of the node scan against expected assertions.
 func VerifyNodeScanResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
-	return verifyScanResults(tc, c, suiteName, "node")
+	return VerifyScanResults(tc, c, suiteName, "node")
 }
 
 // assertScanResults verifies scan results against expected assertions from YAML files.
@@ -1503,4 +1508,70 @@ func areAllScansComplete(suite *cmpv1alpha1.ComplianceSuite) bool {
 		}
 	}
 	return true
+}
+
+// FindPlatformProfiles finds all Profile CRDs with platform type annotation.
+func FindPlatformProfiles(tc *testConfig.TestConfig, c dynclient.Client) ([]cmpv1alpha1.Profile, error) {
+	profileList := &cmpv1alpha1.ProfileList{}
+	err := c.List(goctx.TODO(), profileList, &dynclient.ListOptions{
+		Namespace: tc.OperatorNamespace.Namespace,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list profiles: %w", err)
+	}
+
+	var platformProfiles []cmpv1alpha1.Profile
+	for i := range profileList.Items {
+		profile := profileList.Items[i]
+		// Check if profile has platform type annotation
+		productType, exists := profile.Annotations[cmpv1alpha1.ProductTypeAnnotation]
+		if exists && productType == "Platform" {
+			platformProfiles = append(platformProfiles, profile)
+		}
+	}
+	return platformProfiles, nil
+}
+
+// CreateProfileScanBinding creates a ScanSettingBinding for a given Profile.
+func CreateProfileScanBinding(tc *testConfig.TestConfig, c dynclient.Client, bindingName, profileName string) error {
+	return CreateScanBinding(c, tc, bindingName, profileName, "Profile", tc.E2eSettings)
+}
+
+// DeleteScanBinding deletes a ScanSettingBinding.
+func DeleteScanBinding(tc *testConfig.TestConfig, c dynclient.Client, bindingName string) error {
+	binding := &cmpv1alpha1.ScanSettingBinding{}
+	err := c.Get(goctx.TODO(), dynclient.ObjectKey{Name: bindingName, Namespace: tc.OperatorNamespace.Namespace}, binding)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Printf("ScanSettingBinding %s not found, assuming already deleted", bindingName)
+			return nil
+		}
+		return fmt.Errorf("failed to get ScanSettingBinding %s: %w", bindingName, err)
+	}
+
+	err = c.Delete(goctx.TODO(), binding)
+	if err != nil {
+		return fmt.Errorf("failed to delete ScanSettingBinding %s: %w", bindingName, err)
+	}
+	log.Printf("Deleted ScanSettingBinding %s", bindingName)
+	return nil
+}
+
+// WaitForScanCleanup wraps the private waitForScanCleanup function.
+func WaitForScanCleanup(tc *testConfig.TestConfig, c dynclient.Client, bindingName string) error {
+	return waitForScanCleanup(c, tc, bindingName)
+}
+
+// ValidateProfile verifies that the specified profile exists.
+func ValidateProfile(tc *testConfig.TestConfig, c dynclient.Client, profileName string) error {
+	profile := &cmpv1alpha1.Profile{}
+	err := c.Get(goctx.TODO(), dynclient.ObjectKey{Name: profileName, Namespace: tc.OperatorNamespace.Namespace}, profile)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("profile %s not found in namespace %s", profileName, tc.OperatorNamespace.Namespace)
+		}
+		return fmt.Errorf("failed to get profile %s: %w", profileName, err)
+	}
+	log.Printf("Found profile %s", profileName)
+	return nil
 }

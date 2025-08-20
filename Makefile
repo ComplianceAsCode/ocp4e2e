@@ -31,6 +31,10 @@ e2e-platform: ## Run only platform compliance tests
 e2e-node: ## Run only node compliance tests
 	set -o pipefail; go test $(TEST_FLAGS) . -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="node" | tee .e2e-node-test-results.out
 
+.PHONY: e2e-profile
+e2e-profile: ## Run TestProfile test only
+	set -o pipefail; go test $(TEST_FLAGS) . -run=TestProfile -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) | tee .e2e-profile-test-results.out
+
 .PHONY: help
 help: ## Show this help screen
 	@echo 'Usage: make <OPTIONS> ... <TARGETS>'

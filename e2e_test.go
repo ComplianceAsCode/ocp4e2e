@@ -154,3 +154,61 @@ func TestNodeCompliance(t *testing.T) {
 		t.Fatalf("Failed to verify node scan results after remediation: %s", err)
 	}
 }
+
+func TestProfile(t *testing.T) {
+	tc := config.NewTestConfig()
+
+	// Require profile and product to be specified
+	if tc.Profile == "" {
+		t.Fatal("Profile must be specified using -profile flag or PROFILE environment variable")
+	}
+	if tc.Product == "" {
+		t.Fatal("Product must be specified using -product flag or PRODUCT environment variable")
+	}
+
+	c, err := helpers.GenerateKubeConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate kube config: %s", err)
+	}
+
+	// Verify the specified profile exists
+	err = helpers.ValidateProfile(tc, c, tc.Profile)
+	if err != nil {
+		t.Fatalf("Profile validation failed: %s", err)
+	}
+
+	profileName := tc.Profile
+	bindingName := profileName + "-test-binding"
+
+	t.Logf("Testing profile: %s", profileName)
+
+	// Create scan setting binding for this profile
+	err = helpers.CreateScanBinding(c, tc, bindingName, profileName, "Profile", "default")
+	if err != nil {
+		t.Fatalf("Failed to create scan binding %s for profile %s: %s", bindingName, profileName, err)
+	}
+
+	// Wait for the compliance suite to complete
+	err = helpers.WaitForComplianceSuite(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for compliance suite %s: %s", bindingName, err)
+	}
+
+	// Verify scan results
+	err = helpers.VerifyScanResults(tc, c, bindingName, profileName)
+	if err != nil {
+		t.Fatalf("Failed to verify scan results for profile %s: %s", profileName, err)
+	}
+
+	// Clean up the scan binding
+	err = helpers.DeleteScanBinding(tc, c, bindingName)
+	if err != nil {
+		t.Logf("Warning: Failed to delete scan binding %s: %s", bindingName, err)
+	}
+
+	// Wait for scan cleanup to complete
+	err = helpers.WaitForScanCleanup(tc, c, bindingName)
+	if err != nil {
+		t.Logf("Warning: Failed to wait for scan cleanup for binding %s: %s", bindingName, err)
+	}
+}
