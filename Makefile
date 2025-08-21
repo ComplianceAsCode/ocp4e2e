@@ -19,17 +19,15 @@ PLATFORM?=ocp
 all: e2e
 
 .PHONY: e2e
-e2e: ## Run the e2e tests. This requires that the PROFILE and PRODUCT environment variables be set.
-## idp_fix.patch is used to fix route destination cert for keycloak IdP deployment
-	set -o pipefail; go test $(TEST_FLAGS) . -platform="$(PLATFORM)" -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="$(TEST_TYPE)" | tee .e2e-test-results.out
+e2e: e2e-platform e2e-node ## Run the e2e tests. This runs both platform and node compliance tests.
 
 .PHONY: e2e-platform
 e2e-platform: ## Run only platform compliance tests
-	set -o pipefail; go test $(TEST_FLAGS) . -product="$(PRODUCT)"  -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="platform" | tee .e2e-platform-test-results.out
+	set -o pipefail; go test $(TEST_FLAGS) . -run=^TestPlatformCompliance$$  -product="$(PRODUCT)"  -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="platform" | tee .e2e-platform-test-results.out
 
 .PHONY: e2e-node
 e2e-node: ## Run only node compliance tests
-	set -o pipefail; go test $(TEST_FLAGS) . -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="node" | tee .e2e-node-test-results.out
+	set -o pipefail; go test $(TEST_FLAGS) . -run=^TestNodeCompliance$$ -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="node" | tee .e2e-node-test-results.out
 
 .PHONY: e2e-profile
 e2e-profile: ## Run TestProfile test only
