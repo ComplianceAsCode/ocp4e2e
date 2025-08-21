@@ -635,6 +635,14 @@ func (ctx *e2econtext) waitForMachinePoolUpdate(t *testing.T, name string) {
 	}
 }
 
+func (ctx *e2econtext) waitForStableCluster() error {
+	_, err := exec.Command("oc", "adm", "wait-for-stable-cluster", "--minimum-stable-period=2m").Output()
+	if err != nil {
+		return errors.New(fmt.Sprintf("E2E-FAILURE: Cluster failed to stablize after applying remediations: %s", err))
+	}
+	return nil
+}
+
 func (ctx *e2econtext) doRescan(t *testing.T, s string) {
 	scanList := &cmpv1alpha1.ComplianceScanList{}
 	//nolint:errcheck
