@@ -1,2 +1,2 @@
 build/
-.e2e-test-results.out
+.*-test-results.out
