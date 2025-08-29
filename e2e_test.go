@@ -264,12 +264,6 @@ func TestProfileRemediations(t *testing.T) {
 		t.Fatalf("Failed to apply node remediations: %s", err)
 	}
 
-	// Apply remediations with dependency resolution (includes rescanning)
-	err = helpers.ApplyRemediationsWithDependencies(tc, c, bindingName)
-	if err != nil {
-		t.Fatalf("Failed to apply node remediations: %s", err)
-	}
-
 	// Verify results after remediation
 	err = helpers.VerifyNodeScanResults(tc, c, bindingName)
 	if err != nil {
