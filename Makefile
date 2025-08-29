@@ -23,7 +23,7 @@ e2e: e2e-platform e2e-node ## Run the e2e tests. This runs both platform and nod
 
 .PHONY: e2e-platform
 e2e-platform: ## Run only platform compliance tests
-	set -o pipefail; go test $(TEST_FLAGS) . -run=^TestPlatformCompliance$$  -product="$(PRODUCT)"  -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="platform" | tee .e2e-platform-test-results.out
+	set -o pipefail; go test $(TEST_FLAGS) . -run=^TestPlatformCompliance$$ -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="platform" | tee .e2e-platform-test-results.out
 
 .PHONY: e2e-node
 e2e-node: ## Run only node compliance tests
