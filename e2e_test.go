@@ -172,20 +172,20 @@ func TestProfile(t *testing.T) {
 	}
 
 	// Verify the specified profile exists
-	err = helpers.ValidateProfile(tc, c, tc.Profile)
+	profileFQN := tc.Product + "-" + tc.Profile
+	err = helpers.ValidateProfile(tc, c, profileFQN)
 	if err != nil {
 		t.Fatalf("Profile validation failed: %s", err)
 	}
 
-	profileName := tc.Profile
-	bindingName := profileName + "-test-binding"
+	bindingName := profileFQN + "-test-binding"
 
-	t.Logf("Testing profile: %s", profileName)
+	t.Logf("Testing profile: %s", profileFQN)
 
 	// Create scan setting binding for this profile
-	err = helpers.CreateScanBinding(c, tc, bindingName, profileName, "Profile", "default")
+	err = helpers.CreateScanBinding(c, tc, bindingName, profileFQN, "Profile", "default")
 	if err != nil {
-		t.Fatalf("Failed to create scan binding %s for profile %s: %s", bindingName, profileName, err)
+		t.Fatalf("Failed to create scan binding %s for profile %s: %s", bindingName, profileFQN, err)
 	}
 
 	// Wait for the compliance suite to complete
@@ -195,9 +195,9 @@ func TestProfile(t *testing.T) {
 	}
 
 	// Verify scan results
-	err = helpers.VerifyScanResults(tc, c, bindingName, profileName)
+	err = helpers.VerifyScanResults(tc, c, bindingName, profileFQN)
 	if err != nil {
-		t.Fatalf("Failed to verify scan results for profile %s: %s", profileName, err)
+		t.Fatalf("Failed to verify scan results for profile %s: %s", profileFQN, err)
 	}
 
 	// Clean up the scan binding
@@ -230,20 +230,20 @@ func TestProfileRemediations(t *testing.T) {
 	}
 
 	// Verify the specified profile exists
-	err = helpers.ValidateProfile(tc, c, tc.Profile)
+	profileFQN := tc.Product + "-" + tc.Profile
+	err = helpers.ValidateProfile(tc, c, profileFQN)
 	if err != nil {
 		t.Fatalf("Profile validation failed: %s", err)
 	}
 
-	profileName := tc.Profile
-	bindingName := profileName + "-test-binding"
+	bindingName := profileFQN + "-test-binding"
 
-	t.Logf("Testing profile: %s", profileName)
+	t.Logf("Testing profile: %s", profileFQN)
 
 	// Create scan setting binding for this profile
-	err = helpers.CreateScanBinding(c, tc, bindingName, profileName, "Profile", tc.E2eSettings)
+	err = helpers.CreateScanBinding(c, tc, bindingName, profileFQN, "Profile", tc.E2eSettings)
 	if err != nil {
-		t.Fatalf("Failed to create scan binding %s for profile %s: %s", bindingName, profileName, err)
+		t.Fatalf("Failed to create scan binding %s for profile %s: %s", bindingName, profileFQN, err)
 	}
 
 	// Wait for the compliance suite to complete
@@ -253,9 +253,9 @@ func TestProfileRemediations(t *testing.T) {
 	}
 
 	// Verify scan results
-	err = helpers.VerifyScanResults(tc, c, bindingName, profileName)
+	err = helpers.VerifyScanResults(tc, c, bindingName, profileFQN)
 	if err != nil {
-		t.Fatalf("Failed to verify scan results for profile %s: %s", profileName, err)
+		t.Fatalf("Failed to verify scan results for profile %s: %s", profileFQN, err)
 	}
 
 	// Apply remediations with dependency resolution (includes rescanning)

@@ -1569,15 +1569,15 @@ func WaitForScanCleanup(tc *testConfig.TestConfig, c dynclient.Client, bindingNa
 }
 
 // ValidateProfile verifies that the specified profile exists.
-func ValidateProfile(tc *testConfig.TestConfig, c dynclient.Client, profileName string) error {
+func ValidateProfile(tc *testConfig.TestConfig, c dynclient.Client, profileFQN string) error {
 	profile := &cmpv1alpha1.Profile{}
-	err := c.Get(goctx.TODO(), dynclient.ObjectKey{Name: profileName, Namespace: tc.OperatorNamespace.Namespace}, profile)
+	err := c.Get(goctx.TODO(), dynclient.ObjectKey{Name: profileFQN, Namespace: tc.OperatorNamespace.Namespace}, profile)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return fmt.Errorf("profile %s not found in namespace %s", profileName, tc.OperatorNamespace.Namespace)
+			return fmt.Errorf("profile %s not found in namespace %s", profileFQN, tc.OperatorNamespace.Namespace)
 		}
-		return fmt.Errorf("failed to get profile %s: %w", profileName, err)
+		return fmt.Errorf("failed to get profile %s: %w", profileFQN, err)
 	}
-	log.Printf("Found profile %s", profileName)
+	log.Printf("Found profile %s", profileFQN)
 	return nil
 }
