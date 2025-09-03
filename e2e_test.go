@@ -1,169 +1,284 @@
 package ocp4e2e
 
 import (
-	"fmt"
+	"flag"
+	"log"
+	"os"
 	"testing"
-	"time"
+
+	"github.com/ComplianceAsCode/ocp4e2e/config"
+	"github.com/ComplianceAsCode/ocp4e2e/helpers"
 )
 
-func TestE2e(t *testing.T) {
-	ctx := newE2EContext(t)
-	t.Run("Parameter setup and validation", func(t *testing.T) {
-		ctx.assertRootdir(t)
-		ctx.assertProfile(t)
-		ctx.assertContentImage(t)
-		ctx.assertKubeClient(t)
-		ctx.assertVersion(t)
-	})
+// TestMain handles the setup and teardown for all tests.
+func TestMain(m *testing.M) {
+	// Define flags
+	config.DefineFlags()
 
-	t.Run("Operator setup", func(t *testing.T) {
-		ctx.ensureNamespaceExistsAndSet(t)
-		if ctx.installOperator {
-			ctx.ensureCatalogSourceExists(t)
-			ctx.ensureOperatorGroupExists(t)
-			ctx.ensureSubscriptionExists(t)
-			ctx.waitForOperatorToBeReady(t)
-		} else {
-			t.Logf("Skipping operator install as requested")
-		}
-	})
-	if t.Failed() {
+	flag.Parse()
+
+	// Validate required flags
+	if err := config.ValidateFlags(); err != nil {
+		log.Printf("Flag validation failed: %v", err)
+		os.Exit(1)
+	}
+
+	tc := config.NewTestConfig()
+	// Setup phase
+	err := helpers.Setup(tc)
+	if err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
+
+	// Run tests
+	testResult := m.Run()
+
+	// Teardown phase
+	err = helpers.Teardown(tc)
+	if err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
+
+	// Exit with test result
+	os.Exit(testResult)
+}
+
+func TestPlatformCompliance(t *testing.T) {
+	tc := config.NewTestConfig()
+
+	// Skip if test type doesn't include platform tests
+	if tc.TestType != "platform" && tc.TestType != "all" {
+		t.Skipf("Skipping platform tests: -test-type is %s", tc.TestType)
+	}
+
+	c, err := helpers.GenerateKubeConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate kube config: %s", err)
+	}
+
+	// Create platform tailored profile
+	err = helpers.CreatePlatformTailoredProfile(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to create platform tailored profile: %s", err)
+	}
+
+	// Create scan setting binding and run platform scan
+	platformBindingName := "platform-scan-binding"
+	err = helpers.CreatePlatformScanBinding(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to create %s scan binding: %s", platformBindingName, err)
+	}
+
+	err = helpers.WaitForComplianceSuite(tc, c, platformBindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for compliance suite: %s", err)
+	}
+
+	err = helpers.VerifyPlatformScanResults(tc, c, platformBindingName)
+	if err != nil {
+		t.Fatalf("Failed to verify platform scan results: %s", err)
+	}
+
+	// Exit early if bypassing remediations
+	if tc.BypassRemediations {
+		t.Log("Bypassing remediation application and rescan")
 		return
 	}
 
-	t.Run("Prereqs setup", func(t *testing.T) {
-		ctx.ensureTestProfileBundle(t)
-		ctx.waitForValidTestProfileBundle(t)
-		ctx.ensureTestSettings(t)
-		if err := ctx.setPoolRollingPolicy(t); err != nil {
-			t.Fatalf("failed to set pool rolling policy: %s", err)
-		}
-	})
+	// Apply remediations with dependency resolution (includes rescanning)
+	err = helpers.ApplyRemediationsWithDependencies(tc, c, platformBindingName)
+	if err != nil {
+		t.Fatalf("Failed to apply platform remediations: %s", err)
+	}
 
-	// Remediations
-	var numberOfRemediations int
+	// Verify results after remediation
+	err = helpers.VerifyPlatformScanResults(tc, c, platformBindingName)
+	if err != nil {
+		t.Fatalf("Failed to verify platform scan results after remediation: %s", err)
+	}
+}
 
-	// Failures
-	var numberOfFailuresInit int
-	var numberOfFailuresEnd int
+func TestNodeCompliance(t *testing.T) {
+	tc := config.NewTestConfig()
 
-	// Check Results
-	var numberOfCheckResultsInit int
-	var numberOfCheckResultsEnd int
+	// Skip if test type doesn't include node tests
+	if tc.TestType != "node" && tc.TestType != "all" {
+		t.Skipf("Skipping node tests: -test-type is %s", tc.TestType)
+	}
 
-	// Invalid check results
-	var numberOfInvalidResults int
+	c, err := helpers.GenerateKubeConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate kube config: %s", err)
+	}
 
-	// suite name
-	var suite string
+	// Create node tailored profile
+	err = helpers.CreateNodeTailoredProfile(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to create node tailored profile: %s", err)
+	}
 
-	var manualRemediations []string
+	// Create scan setting binding and run node scan
+	nodeBindingName := "node-scan-binding"
+	err = helpers.CreateNodeScanBinding(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to create %s scan binding: %s", nodeBindingName, err)
+	}
 
-	t.Run("Run first compliance scan", func(t *testing.T) {
-		// Create suite and auto-apply remediations
-		suite = ctx.createBindingForProfile(t)
-		ctx.waitForComplianceSuite(t, suite)
-		numberOfRemediations = ctx.getRemediationsForSuite(t, suite)
-		numberOfFailuresInit = ctx.getFailuresForSuite(t, suite)
-		numberOfCheckResultsInit, manualRemediations = ctx.verifyCheckResultsForSuite(t, suite, false)
-		numberOfInvalidResults = ctx.getInvalidResultsFromSuite(t, suite)
-		ctx.summarizeSuiteFindings(t, suite)
-	})
+	err = helpers.WaitForComplianceSuite(tc, c, nodeBindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for compliance suite: %s", err)
+	}
 
-	if ctx.bypassRemediations {
-		t.Logf("Bypassing remediations and assertions relating to remediations")
+	err = helpers.VerifyNodeScanResults(tc, c, nodeBindingName)
+	if err != nil {
+		t.Fatalf("Failed to verify node scan results: %s", err)
+	}
+
+	// Exit early if bypassing remediations
+	if tc.BypassRemediations {
+		t.Log("Bypassing remediation application and rescan")
 		return
 	}
 
-	//nolint:nestif
-	if numberOfRemediations > 0 || len(manualRemediations) > 0 {
-		t.Run("Wait for Remediations to apply", func(t *testing.T) {
-			// Lets wait for the MachineConfigs to start applying
-			time.Sleep(30 * time.Second)
-			ctx.waitForMachinePoolUpdate(t, "worker")
-			ctx.waitForMachinePoolUpdate(t, "master")
-		})
-
-		if len(manualRemediations) > 0 {
-			// Wait some time after MachineConfigPool is ready to apply manual remediation
-			time.Sleep(60 * time.Second)
-			t.Run("Apply manual remediations", func(t *testing.T) {
-				ctx.applyManualRemediations(t, manualRemediations)
-			})
-			t.Run("Wait for manual Remediations to apply", func(t *testing.T) {
-				// Lets wait for the MachineConfigs to start applying
-				time.Sleep(30 * time.Second)
-				ctx.waitForMachinePoolUpdate(t, "worker")
-				ctx.waitForMachinePoolUpdate(t, "master")
-			})
-		}
-
-		var scanN int
-
-		for scanN = 2; scanN < 5; scanN++ {
-			var needsMoreRemediations bool
-			t.Run(fmt.Sprintf("Check for remediations with dependencies before scan %d", scanN), func(t *testing.T) {
-				needsMoreRemediations = ctx.suiteHasRemediationsWithUnmetDependencies(t, suite)
-			})
-
-			t.Run(fmt.Sprintf("Run compliance scan #%d", scanN), func(t *testing.T) {
-				ctx.doRescan(t, suite)
-				ctx.waitForComplianceSuite(t, suite)
-
-				// We only actually verify results in the final scan
-				if !needsMoreRemediations {
-					numberOfFailuresEnd = ctx.getFailuresForSuite(t, suite)
-					numberOfCheckResultsEnd, _ = ctx.verifyCheckResultsForSuite(t, suite, true)
-				}
-			})
-
-			if !needsMoreRemediations {
-				break
-			}
-
-			t.Run(fmt.Sprintf("Scan %d: Wait for Remediations to apply", scanN), func(t *testing.T) {
-				// Lets wait for the MachineConfigs to start applying
-				time.Sleep(30 * time.Second)
-				ctx.waitForMachinePoolUpdate(t, "master")
-				ctx.waitForMachinePoolUpdate(t, "worker")
-				// TODO: Vincent056 We need to find a way for usb-guards serviceto be started before we can rescan the cluster
-				// right now we are waiting for 45 seconds, but we need to find a better way to do this
-				time.Sleep(45 * time.Second)
-			})
-		}
-
-		if scanN == 5 {
-			t.Fatalf("Reached maximum number of re-scans. There might be a remediation dependency issue.")
-		}
-
-		t.Run("We should have the same number of check results in each scan", func(t *testing.T) {
-			if numberOfCheckResultsInit != numberOfCheckResultsEnd {
-				t.Errorf("The amount of check results are NOT the same: init -> %d  end %d",
-					numberOfCheckResultsInit, numberOfCheckResultsEnd)
-			} else {
-				t.Logf("The amount of check results are the same: init -> %d  end %d",
-					numberOfCheckResultsInit, numberOfCheckResultsEnd)
-			}
-		})
-
-		t.Run("We should have less failures", func(t *testing.T) {
-			if numberOfFailuresInit <= numberOfFailuresEnd {
-				t.Errorf("The failures didn't diminish: init -> %d  end %d",
-					numberOfFailuresInit, numberOfFailuresEnd)
-			} else {
-				t.Logf("There are less failures now: init -> %d  end %d",
-					numberOfFailuresInit, numberOfFailuresEnd)
-			}
-		})
-	} else {
-		t.Logf("No remediations were generated from this profile")
+	// Apply remediations with dependency resolution (includes rescanning)
+	err = helpers.ApplyRemediationsWithDependencies(tc, c, nodeBindingName)
+	if err != nil {
+		t.Fatalf("Failed to apply node remediations: %s", err)
 	}
 
-	t.Run("We should have no errors or invalid results", func(t *testing.T) {
-		if numberOfInvalidResults > 0 {
-			t.Errorf("Expected Pass, Fail, Info, or Skip results from platform scans."+
-				" Got %d Error/None results", numberOfInvalidResults)
-		}
-	})
-	ctx.summarizeSuiteFindings(t, suite)
+	// Verify results after remediation
+	err = helpers.VerifyNodeScanResults(tc, c, nodeBindingName)
+	if err != nil {
+		t.Fatalf("Failed to verify node scan results after remediation: %s", err)
+	}
+}
+
+func TestProfile(t *testing.T) {
+	tc := config.NewTestConfig()
+
+	// Require profile and product to be specified
+	if tc.Profile == "" {
+		t.Fatal("Profile must be specified using -profile flag or PROFILE environment variable")
+	}
+	if tc.Product == "" {
+		t.Fatal("Product must be specified using -product flag or PRODUCT environment variable")
+	}
+
+	c, err := helpers.GenerateKubeConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate kube config: %s", err)
+	}
+
+	// Verify the specified profile exists
+	profileFQN := tc.Product + "-" + tc.Profile
+	err = helpers.ValidateProfile(tc, c, profileFQN)
+	if err != nil {
+		t.Fatalf("Profile validation failed: %s", err)
+	}
+
+	bindingName := profileFQN + "-test-binding"
+
+	t.Logf("Testing profile: %s", profileFQN)
+
+	// Create scan setting binding for this profile
+	err = helpers.CreateScanBinding(c, tc, bindingName, profileFQN, "Profile", "default")
+	if err != nil {
+		t.Fatalf("Failed to create scan binding %s for profile %s: %s", bindingName, profileFQN, err)
+	}
+
+	// Wait for the compliance suite to complete
+	err = helpers.WaitForComplianceSuite(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for compliance suite %s: %s", bindingName, err)
+	}
+
+	// Verify scan results
+	err = helpers.VerifyScanResults(tc, c, bindingName, profileFQN)
+	if err != nil {
+		t.Fatalf("Failed to verify scan results for profile %s: %s", profileFQN, err)
+	}
+
+	// Clean up the scan binding
+	err = helpers.DeleteScanBinding(tc, c, bindingName)
+	if err != nil {
+		t.Logf("Warning: Failed to delete scan binding %s: %s", bindingName, err)
+	}
+
+	// Wait for scan cleanup to complete
+	err = helpers.WaitForScanCleanup(tc, c, bindingName)
+	if err != nil {
+		t.Logf("Warning: Failed to wait for scan cleanup for binding %s: %s", bindingName, err)
+	}
+}
+
+func TestProfileRemediations(t *testing.T) {
+	tc := config.NewTestConfig()
+
+	// Require profile and product to be specified
+	if tc.Profile == "" {
+		t.Fatal("Profile must be specified using -profile flag or PROFILE environment variable")
+	}
+	if tc.Product == "" {
+		t.Fatal("Product must be specified using -product flag or PRODUCT environment variable")
+	}
+
+	c, err := helpers.GenerateKubeConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate kube config: %s", err)
+	}
+
+	// Verify the specified profile exists
+	profileFQN := tc.Product + "-" + tc.Profile
+	err = helpers.ValidateProfile(tc, c, profileFQN)
+	if err != nil {
+		t.Fatalf("Profile validation failed: %s", err)
+	}
+
+	bindingName := profileFQN + "-test-binding"
+
+	t.Logf("Testing profile: %s", profileFQN)
+
+	// Create scan setting binding for this profile
+	err = helpers.CreateScanBinding(c, tc, bindingName, profileFQN, "Profile", tc.E2eSettings)
+	if err != nil {
+		t.Fatalf("Failed to create scan binding %s for profile %s: %s", bindingName, profileFQN, err)
+	}
+
+	// Wait for the compliance suite to complete
+	err = helpers.WaitForComplianceSuite(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for compliance suite %s: %s", bindingName, err)
+	}
+
+	// Verify scan results
+	err = helpers.VerifyScanResults(tc, c, bindingName, profileFQN)
+	if err != nil {
+		t.Fatalf("Failed to verify scan results for profile %s: %s", profileFQN, err)
+	}
+
+	// Apply remediations with dependency resolution (includes rescanning)
+	err = helpers.ApplyRemediationsWithDependencies(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to apply node remediations: %s", err)
+	}
+
+	// Verify results after remediation
+	err = helpers.VerifyNodeScanResults(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to verify node scan results after remediation: %s", err)
+	}
+
+	// Clean up the scan binding
+	err = helpers.DeleteScanBinding(tc, c, bindingName)
+	if err != nil {
+		t.Logf("Warning: Failed to delete scan binding %s: %s", bindingName, err)
+	}
+
+	// Wait for scan cleanup to complete
+	err = helpers.WaitForScanCleanup(tc, c, bindingName)
+	if err != nil {
+		t.Logf("Warning: Failed to wait for scan cleanup for binding %s: %s", bindingName, err)
+	}
 }
