@@ -44,6 +44,10 @@ func Setup(tc *config.TestConfig) error {
 		return err
 	}
 
+	if err := createE2eMachineConfigPool(c); err != nil {
+		return err
+	}
+
 	log.Printf("Setup completed successfully")
 	return nil
 }

@@ -20,6 +20,7 @@ import (
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	extscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -339,6 +340,8 @@ func ensureTestSettings(c dynclient.Client, tc *testConfig.TestConfig) error {
 		autoApplySettings.AutoApplyRemediations = true
 	}
 	autoApplySettings.ShowNotApplicable = true // so that we can test if a setting goes from PASS/FAIL to N/A
+	// Target only the e2e machine config pools for faster testing
+	autoApplySettings.Roles = []string{"e2e-master", "e2e-worker"}
 	err = backoff.RetryNotify(func() error {
 		found := &cmpv1alpha1.ScanSetting{}
 		if err := c.Get(goctx.TODO(), key, found); err != nil {
@@ -1566,6 +1569,197 @@ func DeleteScanBinding(tc *testConfig.TestConfig, c dynclient.Client, bindingNam
 // WaitForScanCleanup wraps the private waitForScanCleanup function.
 func WaitForScanCleanup(tc *testConfig.TestConfig, c dynclient.Client, bindingName string) error {
 	return waitForScanCleanup(c, tc, bindingName)
+}
+
+// createE2eMachineConfigPool creates two machine config pools: "e2e-master" with a single master node
+// and "e2e-worker" with a single worker node to accelerate remediation testing by avoiding the need
+// to reboot all nodes in the respective pools.
+func createE2eMachineConfigPool(c dynclient.Client) error {
+	// Create e2e-worker pool
+	if err := createE2eWorkerPool(c); err != nil {
+		return fmt.Errorf("failed to create e2e-worker pool: %w", err)
+	}
+
+	// Create e2e-master pool
+	if err := createE2eMasterPool(c); err != nil {
+		return fmt.Errorf("failed to create e2e-master pool: %w", err)
+	}
+
+	return nil
+}
+
+// createE2eWorkerPool creates an e2e-worker machine config pool with a single worker node
+func createE2eWorkerPool(c dynclient.Client) error {
+	// Get all worker nodes
+	nodeList := &corev1.NodeList{}
+	workerLabelSelector, err := labels.Parse("node-role.kubernetes.io/worker=")
+	if err != nil {
+		return fmt.Errorf("failed to parse worker label selector: %w", err)
+	}
+
+	listOpts := &dynclient.ListOptions{
+		LabelSelector: workerLabelSelector,
+	}
+	err = c.List(goctx.TODO(), nodeList, listOpts)
+	if err != nil {
+		return fmt.Errorf("failed to list worker nodes: %w", err)
+	}
+
+	if len(nodeList.Items) == 0 {
+		return fmt.Errorf("no worker nodes found")
+	}
+
+	// Select the first worker node
+	selectedNode := &nodeList.Items[0]
+	log.Printf("Selected worker node %s for e2e-worker machine config pool", selectedNode.Name)
+
+	// Check if e2e-worker machine config pool already exists
+	existingPool := &mcfgv1.MachineConfigPool{}
+	err = c.Get(goctx.TODO(), dynclient.ObjectKey{Name: "e2e-worker"}, existingPool)
+	if err == nil {
+		log.Printf("E2E-worker machine config pool already exists")
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check if e2e-worker machine config pool exists: %w", err)
+	}
+
+	// Create a unique label for the selected worker node
+	e2eWorkerNodeLabel := "e2e-worker-pool-node"
+
+	// Add the e2e-worker label to the selected node
+	nodeCopy := selectedNode.DeepCopy()
+	if nodeCopy.Labels == nil {
+		nodeCopy.Labels = make(map[string]string)
+	}
+	nodeCopy.Labels[e2eWorkerNodeLabel] = "true"
+
+	err = c.Update(goctx.TODO(), nodeCopy)
+	if err != nil {
+		return fmt.Errorf("failed to label selected worker node %s: %w", selectedNode.Name, err)
+	}
+	log.Printf("Added label %s=true to worker node %s", e2eWorkerNodeLabel, selectedNode.Name)
+
+	// Create the e2e-worker machine config pool
+	e2eWorkerPool := &mcfgv1.MachineConfigPool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "e2e-worker",
+		},
+		Spec: mcfgv1.MachineConfigPoolSpec{
+			MachineConfigSelector: &metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      "machineconfiguration.openshift.io/role",
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{"worker", "e2e-worker"},
+					},
+				},
+			},
+			NodeSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					e2eWorkerNodeLabel: "true",
+				},
+			},
+			MaxUnavailable: &intstr.IntOrString{
+				Type:   intstr.Int,
+				IntVal: 1,
+			},
+		},
+	}
+
+	err = c.Create(goctx.TODO(), e2eWorkerPool)
+	if err != nil {
+		return fmt.Errorf("failed to create e2e-worker machine config pool: %w", err)
+	}
+
+	log.Printf("Successfully created e2e-worker machine config pool with node %s", selectedNode.Name)
+	return nil
+}
+
+// createE2eMasterPool creates an e2e-master machine config pool with a single master node
+func createE2eMasterPool(c dynclient.Client) error {
+	// Get all master nodes
+	nodeList := &corev1.NodeList{}
+	masterLabelSelector, err := labels.Parse("node-role.kubernetes.io/master=")
+	if err != nil {
+		return fmt.Errorf("failed to parse master label selector: %w", err)
+	}
+
+	listOpts := &dynclient.ListOptions{
+		LabelSelector: masterLabelSelector,
+	}
+	err = c.List(goctx.TODO(), nodeList, listOpts)
+	if err != nil {
+		return fmt.Errorf("failed to list master nodes: %w", err)
+	}
+
+	if len(nodeList.Items) == 0 {
+		return fmt.Errorf("no master nodes found")
+	}
+
+	// Select the first master node
+	selectedNode := &nodeList.Items[0]
+	log.Printf("Selected master node %s for e2e-master machine config pool", selectedNode.Name)
+
+	// Check if e2e-master machine config pool already exists
+	existingPool := &mcfgv1.MachineConfigPool{}
+	err = c.Get(goctx.TODO(), dynclient.ObjectKey{Name: "e2e-master"}, existingPool)
+	if err == nil {
+		log.Printf("E2E-master machine config pool already exists")
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to check if e2e-master machine config pool exists: %w", err)
+	}
+
+	// Create a unique label for the selected master node
+	e2eMasterNodeLabel := "e2e-master-pool-node"
+
+	// Add the e2e-master label to the selected node
+	nodeCopy := selectedNode.DeepCopy()
+	if nodeCopy.Labels == nil {
+		nodeCopy.Labels = make(map[string]string)
+	}
+	nodeCopy.Labels[e2eMasterNodeLabel] = "true"
+
+	err = c.Update(goctx.TODO(), nodeCopy)
+	if err != nil {
+		return fmt.Errorf("failed to label selected master node %s: %w", selectedNode.Name, err)
+	}
+	log.Printf("Added label %s=true to master node %s", e2eMasterNodeLabel, selectedNode.Name)
+
+	// Create the e2e-master machine config pool
+	e2eMasterPool := &mcfgv1.MachineConfigPool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "e2e-master",
+		},
+		Spec: mcfgv1.MachineConfigPoolSpec{
+			MachineConfigSelector: &metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      "machineconfiguration.openshift.io/role",
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{"master", "e2e-master"},
+					},
+				},
+			},
+			NodeSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					e2eMasterNodeLabel: "true",
+				},
+			},
+			MaxUnavailable: &intstr.IntOrString{
+				Type:   intstr.Int,
+				IntVal: 1,
+			},
+		},
+	}
+
+	err = c.Create(goctx.TODO(), e2eMasterPool)
+	if err != nil {
+		return fmt.Errorf("failed to create e2e-master machine config pool: %w", err)
+	}
+
+	log.Printf("Successfully created e2e-master machine config pool with node %s", selectedNode.Name)
+	return nil
 }
 
 // ValidateProfile verifies that the specified profile exists.
