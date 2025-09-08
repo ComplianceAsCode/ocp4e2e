@@ -368,13 +368,9 @@ func setPoolRollingPolicy(c dynclient.Client) error {
 	for i := range mcfgpools.Items {
 		pool := &mcfgpools.Items[i]
 
-		if strings.Contains(pool.Name, "master") {
-			continue
-		}
-
-		if pool.Spec.MaxUnavailable == nil {
-			log.Printf("Setting pool %s Rolling Policy", pool.Name)
-			maxUnavailable := intstr.FromInt(2)
+		maxUnavailable := intstr.FromString("100%")
+		if pool.Spec.MaxUnavailable != &maxUnavailable {
+			log.Printf("Setting pool %s MaxUnavailable to %s for faster reboots to shorten test times", pool.Name, maxUnavailable.String())
 			pool.Spec.MaxUnavailable = &maxUnavailable
 			if err := c.Update(goctx.TODO(), pool); err != nil {
 				return fmt.Errorf("error updating MachineConfigPool list MaxUnavailable: %w", err)
