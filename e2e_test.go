@@ -76,6 +76,11 @@ func TestPlatformCompliance(t *testing.T) {
 		t.Fatalf("Failed to wait for compliance suite: %s", err)
 	}
 
+	err = helpers.SaveCheckResults(tc, c, platformBindingName, "initial-results")
+	if err != nil {
+		t.Fatalf("Failed to save initial scan results.")
+	}
+
 	err = helpers.VerifyPlatformScanResults(tc, c, platformBindingName)
 	if err != nil {
 		t.Fatalf("Failed to verify platform scan results: %s", err)
@@ -97,6 +102,11 @@ func TestPlatformCompliance(t *testing.T) {
 	err = helpers.VerifyPlatformScanResults(tc, c, platformBindingName)
 	if err != nil {
 		t.Fatalf("Failed to verify platform scan results after remediation: %s", err)
+	}
+
+	err = helpers.SaveCheckResults(tc, c, platformBindingName, "final-results")
+	if err != nil {
+		t.Fatalf("Failed to save final scan results.")
 	}
 }
 
@@ -131,6 +141,11 @@ func TestNodeCompliance(t *testing.T) {
 		t.Fatalf("Failed to wait for compliance suite: %s", err)
 	}
 
+	err = helpers.SaveCheckResults(tc, c, nodeBindingName, "initial-results")
+	if err != nil {
+		t.Fatalf("Failed to save initial scan results.")
+	}
+
 	err = helpers.VerifyNodeScanResults(tc, c, nodeBindingName)
 	if err != nil {
 		t.Fatalf("Failed to verify node scan results: %s", err)
@@ -153,6 +168,12 @@ func TestNodeCompliance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to verify node scan results after remediation: %s", err)
 	}
+
+	err = helpers.SaveCheckResults(tc, c, nodeBindingName, "final-results")
+	if err != nil {
+		t.Fatalf("Failed to save final scan results.")
+	}
+
 }
 
 func TestProfile(t *testing.T) {

@@ -3,6 +3,7 @@ package helpers
 import (
 	"bufio"
 	goctx "context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -55,6 +56,14 @@ type RuleTest struct {
 
 type RuleTestResults struct {
 	RuleResults map[string]RuleTest `yaml:"rule_results"`
+}
+
+// AssertionMismatch represents a single assertion failure
+type AssertionMismatch struct {
+	CheckResultName string      `json:"check_result_name"`
+	ExpectedResult  interface{} `json:"expected_result"`
+	ActualResult    string      `json:"actual_result"`
+	ErrorMessage    string      `json:"error_message"`
 }
 
 // assertContentDirectory checks that the content directory is valid and clones
@@ -856,28 +865,53 @@ func verifyResultsAgainstAssertions(
 		resultMap[ruleName] = result
 	}
 
+	// Collect assertion mismatches
+	var mismatches []AssertionMismatch
+
 	// Verify each expected assertion
-	for ruleName, expectedTest := range assertions.RuleResults {
-		result, exists := resultMap[ruleName]
+	for checkResult, expectedTest := range assertions.RuleResults {
+		result, exists := resultMap[checkResult]
 		if !exists {
-			log.Printf("Expected rule result for %s not found in scan results", ruleName)
+			log.Printf("Expected rule result for %s not found in scan results", checkResult)
 			continue
 		}
 
 		// Verify default result
 		if expectedTest.DefaultResult != nil {
-			err := verifyRuleResult(result, expectedTest.DefaultResult, expectedTest, ruleName, "default")
+			err := verifyRuleResult(result, expectedTest.DefaultResult, expectedTest, checkResult, "default")
 			if err != nil {
-				log.Printf("Rule %s failed default result verification: %s", ruleName, err)
+				log.Printf("Rule %s failed default result verification: %s", checkResult, err)
+				mismatches = append(mismatches, AssertionMismatch{
+					CheckResultName: checkResult,
+					ExpectedResult:  expectedTest.DefaultResult,
+					ActualResult:    string(result.Status),
+					ErrorMessage:    err.Error(),
+				})
 			}
 		}
 
 		// Verify result after remediation if specified
 		if expectedTest.ResultAfterRemediation != nil {
-			err := verifyRuleResult(result, expectedTest.ResultAfterRemediation, expectedTest, ruleName, "after remediation")
+			err := verifyRuleResult(result, expectedTest.ResultAfterRemediation, expectedTest, checkResult, "after remediation")
 			if err != nil {
-				log.Printf("Rule %s failed after remediation result verification: %s", ruleName, err)
+				log.Printf("Rule %s failed after remediation result verification: %s", checkResult, err)
+				mismatches = append(mismatches, AssertionMismatch{
+					CheckResultName: checkResult,
+					ExpectedResult:  expectedTest.ResultAfterRemediation,
+					ActualResult:    string(result.Status),
+					ErrorMessage:    err.Error(),
+				})
 			}
+		}
+	}
+
+	// Write mismatches to JSON file if any exist
+	if len(mismatches) > 0 {
+		err := writeAssertionMismatchesToFile(mismatches)
+		if err != nil {
+			log.Printf("Failed to write assertion mismatches to file: %s", err)
+		} else {
+			log.Printf("Wrote %d assertion mismatches to /logs/artifacts/assertion_mismatches.json", len(mismatches))
 		}
 	}
 
@@ -886,6 +920,72 @@ func verifyResultsAgainstAssertions(
 		len(assertions.RuleResults),
 		len(resultList.Items),
 	)
+}
+
+// writeAssertionMismatchesToFile writes assertion mismatches to a JSON file
+func writeAssertionMismatchesToFile(mismatches []AssertionMismatch) error {
+	// We put this in /logs/artifacts so that we can find it easier in
+	// Prow.
+	artifactsDir := "/logs/artifacts"
+	// Marshal mismatches to JSON
+	jsonData, err := json.MarshalIndent(mismatches, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal mismatches to JSON: %w", err)
+	}
+
+	// Write to file
+	filePath := path.Join(artifactsDir, "assertion_mismatches.json")
+	err = ioutil.WriteFile(filePath, jsonData, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write JSON file: %w", err)
+	}
+
+	return nil
+}
+
+// SaveCheckResults collects all ComplianceCheckResult instances for a suite and saves them as JSON
+func SaveCheckResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName, filename string) error {
+	// Get all ComplianceCheckResults for the suite
+	resultList := &cmpv1alpha1.ComplianceCheckResultList{}
+	labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
+	if err != nil {
+		return fmt.Errorf("failed to parse label selector: %w", err)
+	}
+	opts := &dynclient.ListOptions{
+		LabelSelector: labelSelector,
+	}
+	err = c.List(goctx.TODO(), resultList, opts)
+	if err != nil {
+		return fmt.Errorf("failed to get compliance check results for suite %s: %w", suiteName, err)
+	}
+
+	// Create a list of maps where key=result name, value=result status
+	var checkResults []map[string]string
+	for i := range resultList.Items {
+		result := &resultList.Items[i]
+		resultMap := map[string]string{
+			result.Name: string(result.Status),
+		}
+		checkResults = append(checkResults, resultMap)
+	}
+
+	// Marshal to JSON
+	jsonData, err := json.MarshalIndent(checkResults, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal check results to JSON: %w", err)
+	}
+
+	// Write the file to /logs/artifacts so we can more easily dig this out
+	// of Prow later.
+	artifactsDir := "/logs/artifacts"
+	filePath := path.Join(artifactsDir, filename+".json")
+	err = ioutil.WriteFile(filePath, jsonData, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write JSON file: %w", err)
+	}
+
+	log.Printf("Saved %d compliance check results to %s", len(checkResults), filePath)
+	return nil
 }
 
 // getRuleNameFromResult extracts the rule name from a compliance check result.
