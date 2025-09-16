@@ -807,10 +807,9 @@ func assertScanResults(tc *testConfig.TestConfig, resultList *cmpv1alpha1.Compli
 
 // assertResultsWithFileGeneration is a consolidated function that handles both
 // profile and scan assertions It can load existing assertion files, verify
-// results against them, and print assertion content to stdout when files don't
-// exist.
+// results against them, and generate assertion files when they don't exist.
 func assertResultsWithFileGeneration(
-	_ *testConfig.TestConfig,
+	tc *testConfig.TestConfig,
 	resultList *cmpv1alpha1.ComplianceCheckResultList,
 	assertionFile string,
 	afterRemediations bool,
@@ -819,9 +818,9 @@ func assertResultsWithFileGeneration(
 	assertions, err := loadAssertionsFromPath(assertionFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// File doesn't exist, print assertion content to stdout
-			log.Printf("No assertion file found, printing assertion content to stdout: %s", assertionFile)
-			err = generateAssertionFile(resultList, assertionFile, afterRemediations)
+			// File doesn't exist, generate assertion file
+			log.Printf("No assertion file found, generating assertion file: %s", assertionFile)
+			err = generateAssertionFile(tc, resultList, assertionFile, afterRemediations)
 			if err != nil {
 				log.Printf("Failed to generate assertion file: %s", err)
 			}
@@ -832,7 +831,7 @@ func assertResultsWithFileGeneration(
 	}
 
 	// File exists, verify results against assertions
-	verifyResultsAgainstAssertions(resultList, assertions, afterRemediations)
+	verifyResultsAgainstAssertions(tc, resultList, assertions, afterRemediations)
 }
 
 // loadAssertionsFromPath loads rule assertions from a specific file path.
@@ -853,6 +852,7 @@ func loadAssertionsFromPath(filePath string) (*RuleTestResults, error) {
 
 // verifyResultsAgainstAssertions verifies scan results against expected assertions.
 func verifyResultsAgainstAssertions(
+	tc *testConfig.TestConfig,
 	resultList *cmpv1alpha1.ComplianceCheckResultList,
 	assertions *RuleTestResults,
 	_ bool,
@@ -907,11 +907,11 @@ func verifyResultsAgainstAssertions(
 
 	// Write mismatches to JSON file if any exist
 	if len(mismatches) > 0 {
-		err := writeAssertionMismatchesToFile(mismatches)
+		err := writeAssertionMismatchesToFile(tc, mismatches)
 		if err != nil {
 			log.Printf("Failed to write assertion mismatches to file: %s", err)
 		} else {
-			log.Printf("Wrote %d assertion mismatches to /logs/artifacts/assertion_mismatches.json", len(mismatches))
+			log.Printf("Wrote %d assertion mismatches to %s/assertion_mismatches.json", len(mismatches), tc.LogDir)
 		}
 	}
 
@@ -923,10 +923,7 @@ func verifyResultsAgainstAssertions(
 }
 
 // writeAssertionMismatchesToFile writes assertion mismatches to a JSON file
-func writeAssertionMismatchesToFile(mismatches []AssertionMismatch) error {
-	// We put this in /logs/artifacts so that we can find it easier in
-	// Prow.
-	artifactsDir := "/logs/artifacts"
+func writeAssertionMismatchesToFile(tc *testConfig.TestConfig, mismatches []AssertionMismatch) error {
 	// Marshal mismatches to JSON
 	jsonData, err := json.MarshalIndent(mismatches, "", "  ")
 	if err != nil {
@@ -934,7 +931,7 @@ func writeAssertionMismatchesToFile(mismatches []AssertionMismatch) error {
 	}
 
 	// Write to file
-	filePath := path.Join(artifactsDir, "assertion_mismatches.json")
+	filePath := path.Join(tc.LogDir, "assertion_mismatches.json")
 	err = ioutil.WriteFile(filePath, jsonData, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to write JSON file: %w", err)
@@ -975,10 +972,8 @@ func SaveCheckResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName, 
 		return fmt.Errorf("failed to marshal check results to JSON: %w", err)
 	}
 
-	// Write the file to /logs/artifacts so we can more easily dig this out
-	// of Prow later.
-	artifactsDir := "/logs/artifacts"
-	filePath := path.Join(artifactsDir, filename+".json")
+	// Write the file to the configured log directory
+	filePath := path.Join(tc.LogDir, filename+".json")
 	err = ioutil.WriteFile(filePath, jsonData, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to write JSON file: %w", err)
@@ -1064,8 +1059,9 @@ func matchFoundResultToExpectation(
 	return false, fmt.Errorf("couldn't parse the result as string or map")
 }
 
-// generateAssertionFile prints assertion content to stdout for the current test results.
+// generateAssertionFile writes assertion content to disk in the configured log directory for the current test results.
 func generateAssertionFile(
+	tc *testConfig.TestConfig,
 	resultList *cmpv1alpha1.ComplianceCheckResultList,
 	filePath string,
 	afterRemediations bool,
@@ -1094,11 +1090,14 @@ func generateAssertionFile(
 		return fmt.Errorf("failed to marshal assertion content: %w", err)
 	}
 
-	// Print to stdout instead of writing to file
-	log.Printf("=== ASSERTION FILE CONTENT FOR: %s ===", filePath)
-	fmt.Printf("%s", string(data))
-	log.Printf("=== END ASSERTION FILE CONTENT ===")
-	log.Printf("Copy the above content to create: %s", filePath)
+	// Write to file in the configured log directory (following same pattern as SaveCheckResults)
+	fullPath := path.Join(tc.LogDir, filePath)
+	err = ioutil.WriteFile(fullPath, data, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write assertion file: %w", err)
+	}
+
+	log.Printf("Generated assertion file: %s", fullPath)
 	log.Printf(
 		"Generated assertions for %d rules (total rules in results: %d)",
 		len(assertions.RuleResults),
