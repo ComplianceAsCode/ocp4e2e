@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func TestParseRoleResultEval(t *testing.T) {
+func TestNewResultMatcher(t *testing.T) {
 	// Aliases for readability
 	shouldEvalTrue := true
 	shouldErr := true
@@ -66,9 +66,9 @@ func TestParseRoleResultEval(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseRoleResultEval(tt.args.rawstring)
+			got, err := NewResultMatcher(tt.args.rawstring)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseRoleResultEval() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("NewResultMatcher() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			} else if (err != nil) && tt.wantErr {
 				return
@@ -77,7 +77,7 @@ func TestParseRoleResultEval(t *testing.T) {
 			eval := got.Eval(tt.result)
 			t.Logf("Evaluated operand and got = %t", eval)
 			if eval != tt.want {
-				t.Errorf("ParseRoleResultEval() didn't match evaluation. Got = %t, wanted = %t",
+				t.Errorf("NewResultMatcher() didn't match evaluation. Got = %t, wanted = %t",
 					eval, tt.want)
 				return
 			}

@@ -58,7 +58,7 @@ type RuleTestResults struct {
 	RuleResults map[string]RuleTest `yaml:"rule_results"`
 }
 
-// AssertionMismatch represents a single assertion failure
+// AssertionMismatch represents a single assertion failure.
 type AssertionMismatch struct {
 	CheckResultName string      `json:"check_result_name"`
 	ExpectedResult  interface{} `json:"expected_result"`
@@ -379,7 +379,9 @@ func setPoolRollingPolicy(c dynclient.Client) error {
 
 		maxUnavailable := intstr.FromInt(2)
 		if pool.Spec.MaxUnavailable == &maxUnavailable {
-			log.Printf("Setting pool %s MaxUnavailable to %s for faster reboots to shorten test times", pool.Name, maxUnavailable.String())
+			log.Printf(
+				"Setting pool %s MaxUnavailable to %s for faster reboots to shorten test times",
+				pool.Name, maxUnavailable.String())
 			pool.Spec.MaxUnavailable = &maxUnavailable
 			if err := c.Update(goctx.TODO(), pool); err != nil {
 				return fmt.Errorf("error updating MachineConfigPool list MaxUnavailable: %w", err)
@@ -764,36 +766,55 @@ func WaitForComplianceSuite(tc *testConfig.TestConfig, c dynclient.Client, suite
 }
 
 // VerifyScanResults verifies the results of a scan against expected assertions.
-func VerifyScanResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName, scanType string) error {
-	resultList := &cmpv1alpha1.ComplianceCheckResultList{}
-	labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
+func VerifyScanResults(
+	tc *testConfig.TestConfig,
+	_ dynclient.Client,
+	scanType string,
+	results map[string]string,
+	afterRemediation bool,
+) ([]AssertionMismatch, error) {
+	mismatchedAssertions, err := assertScanResults(tc, results, scanType, afterRemediation)
 	if err != nil {
-		return fmt.Errorf("failed to parse label selector: %w", err)
+		return nil, err
 	}
-	opts := &dynclient.ListOptions{
-		LabelSelector: labelSelector,
-	}
-	err = c.List(goctx.TODO(), resultList, opts)
-	if err != nil {
-		return fmt.Errorf("failed to get compliance check results for suite %s: %w", suiteName, err)
-	}
-
-	assertScanResults(tc, resultList, scanType)
-	return nil
+	return mismatchedAssertions, nil
 }
 
 // VerifyPlatformScanResults verifies the results of the platform scan against expected assertions.
-func VerifyPlatformScanResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
-	return VerifyScanResults(tc, c, suiteName, "platform")
+func VerifyPlatformScanResults(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	results map[string]string,
+	afterRemediation bool,
+) ([]AssertionMismatch, error) {
+	mismatchedAssertions, err := VerifyScanResults(tc, c, "platform", results, afterRemediation)
+	if err != nil {
+		return nil, err
+	}
+	return mismatchedAssertions, nil
 }
 
 // VerifyNodeScanResults verifies the results of the node scan against expected assertions.
-func VerifyNodeScanResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
-	return VerifyScanResults(tc, c, suiteName, "node")
+func VerifyNodeScanResults(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	results map[string]string,
+	afterRemediation bool,
+) ([]AssertionMismatch, error) {
+	mismatchedAssertions, err := VerifyScanResults(tc, c, "node", results, afterRemediation)
+	if err != nil {
+		return nil, err
+	}
+	return mismatchedAssertions, nil
 }
 
 // assertScanResults verifies scan results against expected assertions from YAML files.
-func assertScanResults(tc *testConfig.TestConfig, resultList *cmpv1alpha1.ComplianceCheckResultList, scanType string) {
+func assertScanResults(
+	tc *testConfig.TestConfig,
+	results map[string]string,
+	scanType string,
+	afterRemediation bool,
+) ([]AssertionMismatch, error) {
 	var assertionFile string
 	if tc.Profile != "" {
 		assertionFile = fmt.Sprintf("%s-%s.yaml", tc.Profile, tc.Version)
@@ -802,7 +823,11 @@ func assertScanResults(tc *testConfig.TestConfig, resultList *cmpv1alpha1.Compli
 		assertionFile = fmt.Sprintf("%s-%s-%s-rule-assertions.yaml", tc.Platform, tc.Version, scanType)
 	}
 
-	assertResultsWithFileGeneration(tc, resultList, assertionFile, false)
+	mismatchedAssertions, err := assertResultsWithFileGeneration(tc, results, assertionFile, afterRemediation)
+	if err != nil {
+		return nil, err
+	}
+	return mismatchedAssertions, nil
 }
 
 // assertResultsWithFileGeneration is a consolidated function that handles both
@@ -810,28 +835,28 @@ func assertScanResults(tc *testConfig.TestConfig, resultList *cmpv1alpha1.Compli
 // results against them, and generate assertion files when they don't exist.
 func assertResultsWithFileGeneration(
 	tc *testConfig.TestConfig,
-	resultList *cmpv1alpha1.ComplianceCheckResultList,
+	results map[string]string,
 	assertionFile string,
 	afterRemediations bool,
-) {
+) ([]AssertionMismatch, error) {
 	// Try to load existing assertions
 	assertions, err := loadAssertionsFromPath(assertionFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// File doesn't exist, generate assertion file
-			log.Printf("No assertion file found, generating assertion file: %s", assertionFile)
-			err = generateAssertionFile(tc, resultList, assertionFile, afterRemediations)
-			if err != nil {
-				log.Printf("Failed to generate assertion file: %s", err)
-			}
-			return
+			// File doesn't exist so we don't have anything to compare against
+			log.Printf("No assertion file found: %s", assertionFile)
+			return []AssertionMismatch{}, nil
 		}
 		log.Printf("Error loading assertion file %s: %s", assertionFile, err)
-		return
+		return nil, err
 	}
 
 	// File exists, verify results against assertions
-	verifyResultsAgainstAssertions(tc, resultList, assertions, afterRemediations)
+	mismatchedAssertions, err := verifyResultsAgainstAssertions(tc, results, assertions, afterRemediations)
+	if err != nil {
+		return nil, err
+	}
+	return mismatchedAssertions, nil
 }
 
 // loadAssertionsFromPath loads rule assertions from a specific file path.
@@ -852,95 +877,52 @@ func loadAssertionsFromPath(filePath string) (*RuleTestResults, error) {
 
 // verifyResultsAgainstAssertions verifies scan results against expected assertions.
 func verifyResultsAgainstAssertions(
-	tc *testConfig.TestConfig,
-	resultList *cmpv1alpha1.ComplianceCheckResultList,
+	_ *testConfig.TestConfig,
+	results map[string]string,
 	assertions *RuleTestResults,
-	_ bool,
-) {
-	// Create a map of results by rule name for easy lookup
-	resultMap := make(map[string]*cmpv1alpha1.ComplianceCheckResult)
-	for i := range resultList.Items {
-		result := &resultList.Items[i]
-		ruleName := getRuleNameFromResult(result)
-		resultMap[ruleName] = result
-	}
-
+	afterRemediations bool,
+) ([]AssertionMismatch, error) {
 	// Collect assertion mismatches
 	var mismatches []AssertionMismatch
 
 	// Verify each expected assertion
-	for checkResult, expectedTest := range assertions.RuleResults {
-		result, exists := resultMap[checkResult]
+	for ruleName, expected := range assertions.RuleResults {
+		actual, exists := results[ruleName]
 		if !exists {
-			log.Printf("Expected rule result for %s not found in scan results", checkResult)
+			log.Printf("Expected rule result for %s not found in scan results", ruleName)
 			continue
 		}
 
-		// Verify default result
-		if expectedTest.DefaultResult != nil {
-			err := verifyRuleResult(result, expectedTest.DefaultResult, expectedTest, checkResult, "default")
-			if err != nil {
-				log.Printf("Rule %s failed default result verification: %s", checkResult, err)
-				mismatches = append(mismatches, AssertionMismatch{
-					CheckResultName: checkResult,
-					ExpectedResult:  expectedTest.DefaultResult,
-					ActualResult:    string(result.Status),
-					ErrorMessage:    err.Error(),
-				})
+		expectedResult, ok := expected.DefaultResult.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected string, got %T", expected.DefaultResult)
+		}
+		if afterRemediations {
+			expectedResult, ok = expected.ResultAfterRemediation.(string)
+			if !ok {
+				return nil, fmt.Errorf("expected string, got %T", expected.ResultAfterRemediation)
 			}
 		}
-
-		// Verify result after remediation if specified
-		if expectedTest.ResultAfterRemediation != nil {
-			err := verifyRuleResult(result, expectedTest.ResultAfterRemediation, expectedTest, checkResult, "after remediation")
-			if err != nil {
-				log.Printf("Rule %s failed after remediation result verification: %s", checkResult, err)
-				mismatches = append(mismatches, AssertionMismatch{
-					CheckResultName: checkResult,
-					ExpectedResult:  expectedTest.ResultAfterRemediation,
-					ActualResult:    string(result.Status),
-					ErrorMessage:    err.Error(),
-				})
-			}
-		}
-	}
-
-	// Write mismatches to JSON file if any exist
-	if len(mismatches) > 0 {
-		err := writeAssertionMismatchesToFile(tc, mismatches)
+		err := verifyRuleResult(ruleName, expectedResult, actual)
 		if err != nil {
-			log.Printf("Failed to write assertion mismatches to file: %s", err)
-		} else {
-			log.Printf("Wrote %d assertion mismatches to %s/assertion_mismatches.json", len(mismatches), tc.LogDir)
+			log.Printf("Rule %s failed result verification: %s", ruleName, err)
+			mismatches = append(mismatches, AssertionMismatch{
+				CheckResultName: ruleName,
+				ExpectedResult:  expectedResult,
+				ActualResult:    actual,
+				ErrorMessage:    err.Error(),
+			})
 		}
 	}
 
 	log.Printf(
 		"Verified %d rule results against assertions (total rules in results: %d)",
-		len(assertions.RuleResults),
-		len(resultList.Items),
+		len(assertions.RuleResults), len(results),
 	)
+	return mismatches, nil
 }
 
-// writeAssertionMismatchesToFile writes assertion mismatches to a JSON file
-func writeAssertionMismatchesToFile(tc *testConfig.TestConfig, mismatches []AssertionMismatch) error {
-	// Marshal mismatches to JSON
-	jsonData, err := json.MarshalIndent(mismatches, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal mismatches to JSON: %w", err)
-	}
-
-	// Write to file
-	filePath := path.Join(tc.LogDir, "assertion_mismatches.json")
-	err = ioutil.WriteFile(filePath, jsonData, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to write JSON file: %w", err)
-	}
-
-	return nil
-}
-
-// SaveCheckResults collects all ComplianceCheckResult instances for a suite and saves them as JSON
+// SaveCheckResults collects all ComplianceCheckResult instances for a suite and saves them as JSON.
 func SaveCheckResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName, filename string) error {
 	// Get all ComplianceCheckResults for the suite
 	resultList := &cmpv1alpha1.ComplianceCheckResultList{}
@@ -957,7 +939,7 @@ func SaveCheckResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName, 
 	}
 
 	// Create a list of maps where key=result name, value=result status
-	var checkResults []map[string]string
+	checkResults := make([]map[string]string, 0, len(resultList.Items))
 	for i := range resultList.Items {
 		result := &resultList.Items[i]
 		resultMap := map[string]string{
@@ -974,7 +956,7 @@ func SaveCheckResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName, 
 
 	// Write the file to the configured log directory
 	filePath := path.Join(tc.LogDir, filename+".json")
-	err = ioutil.WriteFile(filePath, jsonData, 0644)
+	err = ioutil.WriteFile(filePath, jsonData, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write JSON file: %w", err)
 	}
@@ -983,103 +965,37 @@ func SaveCheckResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName, 
 	return nil
 }
 
-// getRuleNameFromResult extracts the rule name from a compliance check result.
-func getRuleNameFromResult(result *cmpv1alpha1.ComplianceCheckResult) string {
-	// Try to get rule name from annotation first
-	if ruleName, exists := result.Annotations[cmpv1alpha1.ComplianceCheckResultRuleAnnotation]; exists {
-		return ruleName
+func verifyRuleResult(ruleName, expected, actual string) error {
+	m, err := resultparser.NewResultMatcher(expected)
+	if err != nil {
+		return fmt.Errorf("error parsing result evaluator: %w", err)
 	}
 
-	// Fallback to extracting from result name
-	// Remove scan prefix and convert to rule name format
-	resultName := result.Name
-	resultLabels := result.GetLabels()
-	if prefix, exists := resultLabels[cmpv1alpha1.ComplianceScanLabel]; exists {
-		if strings.HasPrefix(resultName, prefix) {
-			// Remove prefix and convert dashes to underscores
-			ruleName := resultName[len(prefix)+1:] // +1 for the dash
-			return strings.ReplaceAll(ruleName, "-", "_")
-		}
-	}
-
-	return resultName
-}
-
-func verifyRuleResult(
-	foundResult *cmpv1alpha1.ComplianceCheckResult,
-	expectedResult interface{},
-	testDef RuleTest,
-	ruleName string,
-	phase string,
-) error {
-	if matches, err := matchFoundResultToExpectation(foundResult, expectedResult); !matches || err != nil {
-		if err != nil {
-			return fmt.Errorf("E2E-ERROR: The e2e YAML for rule '%s' is malformed: %v . Got error: %w", ruleName, testDef, err)
-		}
-		return fmt.Errorf("E2E-FAILURE: The expected %s result for the %s rule didn't match. Expected '%s', Got '%s'",
-			phase, ruleName, expectedResult, foundResult.Status)
+	match := m.Eval(actual)
+	if !match {
+		return fmt.Errorf("E2E-FAILURE: The expected result for %s rule didn't match. Expected '%s', Got '%s'",
+			ruleName, expected, actual)
 	}
 	return nil
 }
 
-func matchFoundResultToExpectation(
-	foundResult *cmpv1alpha1.ComplianceCheckResult, expectedResult interface{},
-) (bool, error) {
-	// Handle expected result for all roles
-	if resultStr, ok := expectedResult.(string); ok {
-		p, perr := resultparser.ParseRoleResultEval(resultStr)
-		if perr != nil {
-			return false, fmt.Errorf("error parsing result evaluator: %w", perr)
-		}
-		return p.Eval(string(foundResult.Status)), nil
-	}
-	// Handle role-specific result
-	if resultMap, ok := expectedResult.(map[interface{}]interface{}); ok {
-		for rawRole, rawRoleResult := range resultMap {
-			role, ok := rawRole.(string)
-			if !ok {
-				return false, fmt.Errorf("couldn't parse the result as string or map of strings")
-			}
-			roleResult, ok := rawRoleResult.(string)
-			if !ok {
-				return false, fmt.Errorf("couldn't parse the result as string or map of strings")
-			}
-			p, perr := resultparser.ParseRoleResultEval(roleResult)
-			if perr != nil {
-				return false, fmt.Errorf("error parsing result evaluator: %w", perr)
-			}
-			// NOTE(jaosorior): Normally, the results will have a reference
-			// to the role they apply to in the name. This is hacky...
-			if strings.Contains(foundResult.GetLabels()[cmpv1alpha1.ComplianceScanLabel], role) {
-				return p.Eval(string(foundResult.Status)), nil
-			}
-		}
-		return false, fmt.Errorf("the role specified in the test doesn't match an existing role")
-	}
-	return false, fmt.Errorf("couldn't parse the result as string or map")
-}
-
-// generateAssertionFile writes assertion content to disk in the configured log directory for the current test results.
-func generateAssertionFile(
+func GenerateAssertionFileFromResults(
 	tc *testConfig.TestConfig,
-	resultList *cmpv1alpha1.ComplianceCheckResultList,
-	filePath string,
-	afterRemediations bool,
+	_ dynclient.Client,
+	assertionFile string,
+	initialResults, finalResults map[string]string,
+	afterRemediation bool,
 ) error {
-	// Generate assertions from current results
 	assertions := &RuleTestResults{
 		RuleResults: make(map[string]RuleTest),
 	}
+	ruleTest := RuleTest{}
+	for ruleName, initialResult := range initialResults {
+		ruleTest.DefaultResult = initialResult
 
-	for i := range resultList.Items {
-		result := &resultList.Items[i]
-		ruleName := getRuleNameFromResult(result)
-
-		ruleTest := assertions.RuleResults[ruleName]
-		if !afterRemediations {
-			ruleTest.DefaultResult = string(result.Status)
-		} else {
-			ruleTest.ResultAfterRemediation = string(result.Status)
+		finalResult := finalResults[ruleName]
+		if afterRemediation && finalResult != initialResult {
+			ruleTest.ResultAfterRemediation = finalResult
 		}
 		assertions.RuleResults[ruleName] = ruleTest
 	}
@@ -1090,18 +1006,16 @@ func generateAssertionFile(
 		return fmt.Errorf("failed to marshal assertion content: %w", err)
 	}
 
-	// Write to file in the configured log directory (following same pattern as SaveCheckResults)
-	fullPath := path.Join(tc.LogDir, filePath)
-	err = ioutil.WriteFile(fullPath, data, 0644)
+	fullPath := path.Join(tc.LogDir, assertionFile)
+	err = ioutil.WriteFile(fullPath, data, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write assertion file: %w", err)
 	}
 
 	log.Printf("Generated assertion file: %s", fullPath)
 	log.Printf(
-		"Generated assertions for %d rules (total rules in results: %d)",
+		"Generated assertions for %d rules",
 		len(assertions.RuleResults),
-		len(resultList.Items),
 	)
 	return nil
 }
@@ -1674,5 +1588,62 @@ func ValidateProfile(tc *testConfig.TestConfig, c dynclient.Client, profileFQN s
 		return fmt.Errorf("failed to get profile %s: %w", profileFQN, err)
 	}
 	log.Printf("Found profile %s", profileFQN)
+	return nil
+}
+
+// CreateResultMap creates a map of rule names to RuleTest structs from compliance check results.
+func CreateResultMap(_ *testConfig.TestConfig, c dynclient.Client, suiteName string) (map[string]string, error) {
+	// Get all ComplianceCheckResults for the suite
+	resultList := &cmpv1alpha1.ComplianceCheckResultList{}
+	labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse label selector: %w", err)
+	}
+	opts := &dynclient.ListOptions{
+		LabelSelector: labelSelector,
+	}
+	err = c.List(goctx.TODO(), resultList, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get compliance check results for suite %s: %w", suiteName, err)
+	}
+
+	// Create result map
+	resultMap := make(map[string]string)
+	for i := range resultList.Items {
+		result := &resultList.Items[i]
+		resultMap[result.Name] = string(result.Status)
+	}
+
+	log.Printf("Created result map with %d rules for suite %s", len(resultMap), suiteName)
+	return resultMap, nil
+}
+
+// SaveResultAsJSON saves JSON data about the scan results to a file in the configured log directory.
+func SaveResultAsJSON(tc *testConfig.TestConfig, results map[string]string, filename string) error {
+	filePath := path.Join(tc.LogDir, filename)
+	jsonData, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal results to JSON: %w", err)
+	}
+	err = ioutil.WriteFile(filePath, jsonData, 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to write JSON file: %w", err)
+	}
+	log.Printf("Saved JSON data to %s", filePath)
+	return nil
+}
+
+// SaveMismatchesAsJSON saves JSON data about mismatched assertions to a file in the configured log directory.
+func SaveMismatchesAsJSON(tc *testConfig.TestConfig, mismatchedAssertions []AssertionMismatch, filename string) error {
+	filePath := path.Join(tc.LogDir, filename)
+	jsonData, err := json.MarshalIndent(mismatchedAssertions, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal results to JSON: %w", err)
+	}
+	err = ioutil.WriteFile(filePath, jsonData, 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to write JSON file: %w", err)
+	}
+	log.Printf("Saved JSON data to %s", filePath)
 	return nil
 }

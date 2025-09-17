@@ -62,8 +62,8 @@ func (oo *orOperand) merge(other evalBuilder) (evalBuilder, error) {
 	return oo, nil
 }
 
-func ParseRoleResultEval(rawstring string) (Evaluator, error) {
-	tokens := tokenizeRoleResultEval(rawstring)
+func NewResultMatcher(rawstring string) (Evaluator, error) {
+	tokens := tokenize(rawstring)
 	var currentOperand evalBuilder
 	for _, token := range tokens {
 		switch token {
@@ -88,6 +88,6 @@ func ParseRoleResultEval(rawstring string) (Evaluator, error) {
 	return currentOperand, nil
 }
 
-func tokenizeRoleResultEval(rawstring string) []string {
+func tokenize(rawstring string) []string {
 	return strings.Split(rawstring, " ")
 }
