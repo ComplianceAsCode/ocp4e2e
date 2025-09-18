@@ -3,7 +3,6 @@ package helpers
 import (
 	"bufio"
 	goctx "context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -921,49 +920,6 @@ func verifyResultsAgainstAssertions(
 		len(assertions.RuleResults), len(results),
 	)
 	return mismatches, nil
-}
-
-// SaveCheckResults collects all ComplianceCheckResult instances for a suite and saves them as JSON.
-func SaveCheckResults(tc *testConfig.TestConfig, c dynclient.Client, suiteName, filename string) error {
-	// Get all ComplianceCheckResults for the suite
-	resultList := &cmpv1alpha1.ComplianceCheckResultList{}
-	labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
-	if err != nil {
-		return fmt.Errorf("failed to parse label selector: %w", err)
-	}
-	opts := &dynclient.ListOptions{
-		LabelSelector: labelSelector,
-	}
-	err = c.List(goctx.TODO(), resultList, opts)
-	if err != nil {
-		return fmt.Errorf("failed to get compliance check results for suite %s: %w", suiteName, err)
-	}
-
-	// Create a list of maps where key=result name, value=result status
-	checkResults := make([]map[string]string, 0, len(resultList.Items))
-	for i := range resultList.Items {
-		result := &resultList.Items[i]
-		resultMap := map[string]string{
-			result.Name: string(result.Status),
-		}
-		checkResults = append(checkResults, resultMap)
-	}
-
-	// Marshal to JSON
-	jsonData, err := json.MarshalIndent(checkResults, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal check results to JSON: %w", err)
-	}
-
-	// Write the file to the configured log directory
-	filePath := path.Join(tc.LogDir, filename+".json")
-	err = ioutil.WriteFile(filePath, jsonData, 0o600)
-	if err != nil {
-		return fmt.Errorf("failed to write JSON file: %w", err)
-	}
-
-	log.Printf("Saved %d compliance check results to %s", len(checkResults), filePath)
-	return nil
 }
 
 func verifyRuleResult(ruleName, expected, actual string) error {
