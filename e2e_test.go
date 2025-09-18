@@ -105,8 +105,7 @@ func TestPlatformCompliance(t *testing.T) {
 	// Exit early if bypassing remediations
 	if tc.BypassRemediations {
 		t.Log("Bypassing remediation application and rescan")
-		err := helpers.GenerateAssertionFileFromResults(
-			tc, c, assertionFile, initialResults, initialResults, afterRemediation)
+		err := helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, nil)
 		if err != nil {
 			t.Fatalf("Failed to generate assertion file: %s", err)
 		}
@@ -143,8 +142,7 @@ func TestPlatformCompliance(t *testing.T) {
 		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
-	err = helpers.GenerateAssertionFileFromResults(
-		tc, c, assertionFile, initialResults, finalResults, afterRemediation)
+	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, finalResults)
 	if err != nil {
 		t.Fatalf("Failed to generate assertion file: %s", err)
 	}
@@ -209,8 +207,7 @@ func TestNodeCompliance(t *testing.T) {
 	// Exit early if bypassing remediations
 	if tc.BypassRemediations {
 		t.Log("Bypassing remediation application and rescan")
-		err := helpers.GenerateAssertionFileFromResults(
-			tc, c, assertionFile, initialResults, initialResults, afterRemediation)
+		err := helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, nil)
 		if err != nil {
 			t.Fatalf("Failed to generate assertion file: %s", err)
 		}
@@ -247,8 +244,7 @@ func TestNodeCompliance(t *testing.T) {
 		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
-	err = helpers.GenerateAssertionFileFromResults(
-		tc, c, assertionFile, initialResults, finalResults, afterRemediation)
+	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, finalResults)
 	if err != nil {
 		t.Fatalf("Failed to generate assertion file: %s", err)
 	}
@@ -315,8 +311,7 @@ func TestProfile(t *testing.T) {
 	}
 
 	assertionFile := fmt.Sprintf("%s-%s-rule-assertions.yaml", profileFQN, tc.Version)
-	err = helpers.GenerateAssertionFileFromResults(
-		tc, c, assertionFile, initialResults, initialResults, afterRemediation)
+	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, nil)
 	if err != nil {
 		t.Fatalf("Failed to generate assertion file: %s", err)
 	}
@@ -429,8 +424,7 @@ func TestProfileRemediations(t *testing.T) {
 	}
 
 	assertionFile := fmt.Sprintf("%s-%s-rule-assertions.yaml", profileFQN, tc.Version)
-	err = helpers.GenerateAssertionFileFromResults(
-		tc, c, assertionFile, initialResults, finalResults, afterRemediation)
+	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, finalResults)
 	if err != nil {
 		t.Fatalf("Failed to generate assertion file: %s", err)
 	}

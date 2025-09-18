@@ -984,18 +984,20 @@ func GenerateAssertionFileFromResults(
 	_ dynclient.Client,
 	assertionFile string,
 	initialResults, finalResults map[string]string,
-	afterRemediation bool,
 ) error {
 	assertions := &RuleTestResults{
 		RuleResults: make(map[string]RuleTest),
 	}
 	ruleTest := RuleTest{}
+	afterRemediation := finalResults != nil
 	for ruleName, initialResult := range initialResults {
 		ruleTest.DefaultResult = initialResult
 
-		finalResult := finalResults[ruleName]
-		if afterRemediation && finalResult != initialResult {
-			ruleTest.ResultAfterRemediation = finalResult
+		if afterRemediation {
+			finalResult := finalResults[ruleName]
+			if finalResult != initialResult {
+				ruleTest.ResultAfterRemediation = finalResult
+			}
 		}
 		assertions.RuleResults[ruleName] = ruleTest
 	}
