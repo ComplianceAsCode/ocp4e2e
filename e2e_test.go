@@ -81,7 +81,7 @@ func TestPlatformCompliance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create result map: %s", err)
 	}
-	err = helpers.SaveResultAsJSON(tc, initialResults, "initial-platform-results.json")
+	err = helpers.SaveResultAsYAML(tc, initialResults, "initial-platform-results.yaml")
 	if err != nil {
 		t.Fatalf("Failed to save initial platform scan results.")
 	}
@@ -95,7 +95,7 @@ func TestPlatformCompliance(t *testing.T) {
 
 	// Write any mismatched assertions to disk
 	if len(mismatchedAssertions) > 0 {
-		err = helpers.SaveMismatchesAsJSON(tc, mismatchedAssertions, "initial-platform-mismatches.json")
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, "initial-platform-mismatches.yaml")
 		if err != nil {
 			t.Fatalf("Failed to save initial mismatched platform assertions: %s", err)
 		}
@@ -123,7 +123,7 @@ func TestPlatformCompliance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create result map: %s", err)
 	}
-	err = helpers.SaveResultAsJSON(tc, finalResults, "final-platform-results.json")
+	err = helpers.SaveResultAsYAML(tc, finalResults, "final-platform-results.yaml")
 	if err != nil {
 		t.Fatalf("Failed to save final platform scan results.")
 	}
@@ -135,7 +135,7 @@ func TestPlatformCompliance(t *testing.T) {
 
 	// Write any mismatched assertions to disk
 	if len(mismatchedAssertions) > 0 {
-		err = helpers.SaveMismatchesAsJSON(tc, mismatchedAssertions, "final-platform-mismatches.json")
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, "final-platform-mismatches.yaml")
 		if err != nil {
 			t.Fatalf("Failed to save final mismatched assertions: %s", err)
 		}
@@ -183,7 +183,7 @@ func TestNodeCompliance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create result map: %s", err)
 	}
-	err = helpers.SaveResultAsJSON(tc, initialResults, "initial-node-results.json")
+	err = helpers.SaveResultAsYAML(tc, initialResults, "initial-node-results.yaml")
 	if err != nil {
 		t.Fatalf("Failed to save initial node scan results.")
 	}
@@ -197,7 +197,7 @@ func TestNodeCompliance(t *testing.T) {
 
 	// Write any mismatched assertions to disk
 	if len(mismatchedAssertions) > 0 {
-		err = helpers.SaveMismatchesAsJSON(tc, mismatchedAssertions, "initial-node-mismatches.json")
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, "initial-node-mismatches.yaml")
 		if err != nil {
 			t.Fatalf("Failed to save initial mismatched node assertions: %s", err)
 		}
@@ -225,7 +225,7 @@ func TestNodeCompliance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create result map: %s", err)
 	}
-	err = helpers.SaveResultAsJSON(tc, finalResults, "final-node-results.json")
+	err = helpers.SaveResultAsYAML(tc, finalResults, "final-node-results.yaml")
 	if err != nil {
 		t.Fatalf("Failed to save final node scan results.")
 	}
@@ -237,7 +237,7 @@ func TestNodeCompliance(t *testing.T) {
 
 	// Write any mismatched assertions to disk
 	if len(mismatchedAssertions) > 0 {
-		err = helpers.SaveMismatchesAsJSON(tc, mismatchedAssertions, "final-node-mismatches.json")
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, "final-node-mismatches.yaml")
 		if err != nil {
 			t.Fatalf("Failed to save final mismatched assertions: %s", err)
 		}
@@ -302,9 +302,9 @@ func TestProfile(t *testing.T) {
 	}
 
 	// Write any mismatched assertions to disk
-	mismatchedAssertionFileName := fmt.Sprintf("iniital-%s-mismatches.json", profileFQN)
+	mismatchedAssertionFileName := fmt.Sprintf("iniital-%s-mismatches.yaml", profileFQN)
 	if len(mismatchedAssertions) > 0 {
-		err = helpers.SaveMismatchesAsJSON(tc, mismatchedAssertions, mismatchedAssertionFileName)
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, mismatchedAssertionFileName)
 		if err != nil {
 			t.Fatalf("Failed to save initial mismatched profile assertions: %s", err)
 		}
@@ -372,7 +372,7 @@ func TestProfileRemediations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create result map: %s", err)
 	}
-	err = helpers.SaveResultAsJSON(tc, initialResults, fmt.Sprintf("initial-%s-results.json", profileFQN))
+	err = helpers.SaveResultAsYAML(tc, initialResults, fmt.Sprintf("initial-%s-results.yaml", profileFQN))
 	if err != nil {
 		t.Fatalf("Failed to save initial %s scan results.", profileFQN)
 	}
@@ -386,8 +386,8 @@ func TestProfileRemediations(t *testing.T) {
 
 	// Write any mismatched assertions to disk
 	if len(mismatchedAssertions) > 0 {
-		mismatchedAssertionFileName := fmt.Sprintf("initial-%s-mismatches.json", profileFQN)
-		err = helpers.SaveMismatchesAsJSON(tc, mismatchedAssertions, mismatchedAssertionFileName)
+		mismatchedAssertionFileName := fmt.Sprintf("initial-%s-mismatches.yaml", profileFQN)
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, mismatchedAssertionFileName)
 		if err != nil {
 			t.Fatalf("Failed to save initial mismatched %s assertions: %s", profileFQN, err)
 		}
@@ -404,7 +404,7 @@ func TestProfileRemediations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create result map: %s", err)
 	}
-	err = helpers.SaveResultAsJSON(tc, finalResults, fmt.Sprintf("final-%s-results.json", profileFQN))
+	err = helpers.SaveResultAsYAML(tc, finalResults, fmt.Sprintf("final-%s-results.yaml", profileFQN))
 	if err != nil {
 		t.Fatalf("Failed to save final %s scan results.", profileFQN)
 	}
@@ -416,8 +416,8 @@ func TestProfileRemediations(t *testing.T) {
 	}
 
 	if len(mismatchedAssertions) > 0 {
-		mismatchedAssertionFileName := fmt.Sprintf("final-%s-mismatches.json", profileFQN)
-		err = helpers.SaveMismatchesAsJSON(tc, mismatchedAssertions, mismatchedAssertionFileName)
+		mismatchedAssertionFileName := fmt.Sprintf("final-%s-mismatches.yaml", profileFQN)
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, mismatchedAssertionFileName)
 		if err != nil {
 			t.Fatalf("Failed to save final mismatched assertions: %s", err)
 		}

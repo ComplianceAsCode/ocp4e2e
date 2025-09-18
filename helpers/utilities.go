@@ -60,10 +60,10 @@ type RuleTestResults struct {
 
 // AssertionMismatch represents a single assertion failure.
 type AssertionMismatch struct {
-	CheckResultName string      `json:"check_result_name"`
-	ExpectedResult  interface{} `json:"expected_result"`
-	ActualResult    string      `json:"actual_result"`
-	ErrorMessage    string      `json:"error_message"`
+	CheckResultName string      `yaml:"check_result_name"`
+	ExpectedResult  interface{} `yaml:"expected_result"`
+	ActualResult    string      `yaml:"actual_result"`
+	ErrorMessage    string      `yaml:"error_message"`
 }
 
 // assertContentDirectory checks that the content directory is valid and clones
@@ -1620,32 +1620,32 @@ func CreateResultMap(_ *testConfig.TestConfig, c dynclient.Client, suiteName str
 	return resultMap, nil
 }
 
-// SaveResultAsJSON saves JSON data about the scan results to a file in the configured log directory.
-func SaveResultAsJSON(tc *testConfig.TestConfig, results map[string]string, filename string) error {
+// SaveResultAsYAML saves YAML data about the scan results to a file in the configured log directory.
+func SaveResultAsYAML(tc *testConfig.TestConfig, results map[string]string, filename string) error {
 	filePath := path.Join(tc.LogDir, filename)
-	jsonData, err := json.MarshalIndent(results, "", "  ")
+	yamlData, err := yaml.Marshal(results)
 	if err != nil {
-		return fmt.Errorf("failed to marshal results to JSON: %w", err)
+		return fmt.Errorf("failed to marshal results to YAML: %w", err)
 	}
-	err = ioutil.WriteFile(filePath, jsonData, 0o600)
+	err = ioutil.WriteFile(filePath, yamlData, 0o600)
 	if err != nil {
-		return fmt.Errorf("failed to write JSON file: %w", err)
+		return fmt.Errorf("failed to write YAML file: %w", err)
 	}
-	log.Printf("Saved JSON data to %s", filePath)
+	log.Printf("Saved YAML data to %s", filePath)
 	return nil
 }
 
-// SaveMismatchesAsJSON saves JSON data about mismatched assertions to a file in the configured log directory.
-func SaveMismatchesAsJSON(tc *testConfig.TestConfig, mismatchedAssertions []AssertionMismatch, filename string) error {
+// SaveMismatchesAsYAML saves YAML data about mismatched assertions to a file in the configured log directory.
+func SaveMismatchesAsYAML(tc *testConfig.TestConfig, mismatchedAssertions []AssertionMismatch, filename string) error {
 	filePath := path.Join(tc.LogDir, filename)
-	jsonData, err := json.MarshalIndent(mismatchedAssertions, "", "  ")
+	yamlData, err := yaml.Marshal(mismatchedAssertions)
 	if err != nil {
-		return fmt.Errorf("failed to marshal results to JSON: %w", err)
+		return fmt.Errorf("failed to marshal results to YAML: %w", err)
 	}
-	err = ioutil.WriteFile(filePath, jsonData, 0o600)
+	err = ioutil.WriteFile(filePath, yamlData, 0o600)
 	if err != nil {
-		return fmt.Errorf("failed to write JSON file: %w", err)
+		return fmt.Errorf("failed to write YAML file: %w", err)
 	}
-	log.Printf("Saved JSON data to %s", filePath)
+	log.Printf("Saved YAML data to %s", filePath)
 	return nil
 }
