@@ -241,6 +241,7 @@ func waitForOperatorToBeReady(c dynclient.Client, tc *testConfig.TestConfig) err
 }
 
 func ensureTestProfileBundles(c dynclient.Client, tc *testConfig.TestConfig) error {
+	log.Printf("Using content image for testing: %s", tc.ContentImage)
 	bundles := map[string]string{
 		tc.OpenShiftBundleName: "ocp4",
 		tc.RHCOSBundleName:     "rhcos4",
