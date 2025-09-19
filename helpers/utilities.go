@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,7 @@ import (
 )
 
 var (
+	upstreamRepo             = "https://github.com/ComplianceAsCode/content/tree/master/%s"
 	assertionsPath           = "/tests/assertions/ocp4/"
 	resourcesPath            = "ocp-resources"
 	namespaceFileName        = "compliance-operator-ns.yaml"
@@ -1741,4 +1743,116 @@ func SaveMismatchesAsYAML(tc *testConfig.TestConfig, mismatchedAssertions []Asse
 	}
 	log.Printf("Saved YAML data to %s", filePath)
 	return nil
+}
+
+// GenerateMismatchReport creates a markdown report from assertion mismatches.
+func GenerateMismatchReport(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	mismatchedAssertions []AssertionMismatch,
+	bindingName string,
+) error {
+	var report strings.Builder
+
+	// Write header
+	report.WriteString(fmt.Sprintf("# %s Compliance Test Results\n\n", bindingName))
+	report.WriteString(fmt.Sprintf("**Test Run Date:** %s\n", time.Now().Format("2006-01-02 15:04:05 UTC")))
+	report.WriteString(fmt.Sprintf("**Platform:** %s\n", tc.Platform))
+	report.WriteString(fmt.Sprintf("**Version:** %s\n", tc.Version))
+	report.WriteString(fmt.Sprintf("**Content Image:** %s\n\n", tc.ContentImage))
+
+	// Summary section
+	report.WriteString("## Summary\n\n")
+	report.WriteString(fmt.Sprintf("**Total Assertion Failures:** %d\n\n", len(mismatchedAssertions)))
+
+	// Detailed failures section
+	report.WriteString("## Detailed Failures\n\n")
+
+	for i, mismatch := range mismatchedAssertions {
+		report.WriteString(fmt.Sprintf("### %d. %s\n\n", i+1, mismatch.CheckResultName))
+
+		ruleName, _ := getRuleNameFromResultName(tc, c, mismatch.CheckResultName)
+		if ruleName != "" {
+			rulePath, found := findRulePath(tc, ruleName)
+			if found {
+				relativePath := path.Join(strings.TrimPrefix(rulePath, tc.ContentDir+"/"), "rule.yml")
+				link := fmt.Sprintf(upstreamRepo, relativePath)
+				report.WriteString(fmt.Sprintf("- **Rule Source:** [%s](%s)\n", ruleName, link))
+			}
+
+		}
+
+		report.WriteString(fmt.Sprintf("- **Expected Result:** `%v`\n", mismatch.ExpectedResult))
+		report.WriteString(fmt.Sprintf("- **Actual Result:** `%s`\n", mismatch.ActualResult))
+
+		if mismatch.ErrorMessage != "" {
+			report.WriteString(fmt.Sprintf("- **Error Details:** %s\n", mismatch.ErrorMessage))
+		}
+		report.WriteString("\n")
+	}
+
+	filename := fmt.Sprintf("%s-report.md", bindingName)
+	filePath := path.Join(tc.LogDir, filename)
+
+	err := ioutil.WriteFile(filePath, []byte(report.String()), 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to write markdown report: %w", err)
+	}
+
+	log.Printf("Generated compliance report: %s", filePath)
+
+	// Convert markdown to HTML and save
+	htmlContent := convertMarkdownToHTML(report.String())
+	htmlFilename := fmt.Sprintf("%s-report.html", bindingName)
+	htmlFilePath := path.Join(tc.LogDir, htmlFilename)
+
+	err = ioutil.WriteFile(htmlFilePath, []byte(htmlContent), 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to write HTML report: %w", err)
+	}
+
+	log.Printf("Generated HTML compliance report: %s", htmlFilePath)
+	return nil
+}
+
+// convertMarkdownToHTML converts basic markdown to HTML
+func convertMarkdownToHTML(markdown string) string {
+	html := markdown
+
+	// Convert headers BEFORE converting newlines
+	html = regexp.MustCompile(`(?m)^# (.+)$`).ReplaceAllString(html, "<h1>$1</h1>")
+	html = regexp.MustCompile(`(?m)^## (.+)$`).ReplaceAllString(html, "<h2>$1</h2>")
+	html = regexp.MustCompile(`(?m)^### (.+)$`).ReplaceAllString(html, "<h3>$1</h3>")
+
+	// Convert bullet points BEFORE converting newlines
+	html = regexp.MustCompile(`(?m)^- (.+)$`).ReplaceAllString(html, "<li>$1</li>")
+
+	// Convert bold text
+	html = regexp.MustCompile(`\*\*(.+?)\*\*`).ReplaceAllString(html, "<strong>$1</strong>")
+
+	// Convert code blocks
+	html = regexp.MustCompile("`(.+?)`").ReplaceAllString(html, "<code>$1</code>")
+
+	// Convert links
+	html = regexp.MustCompile(`\[(.+?)\]\((.+?)\)`).ReplaceAllString(html, `<a href="$2">$1</a>`)
+
+	// Convert newlines to <br> AFTER other conversions
+	// html = strings.ReplaceAll(html, "\n", "<br>\n")
+
+	// Wrap in basic HTML structure
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+    <title>Compliance Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1, h2, h3 { color: #333; }
+        code { background-color: #f4f4f4; padding: 2px 4px; }
+        li { margin: 5px 0; }
+    </style>
+</head>
+<body>
+%s
+</body>
+</html>`, html)
 }
