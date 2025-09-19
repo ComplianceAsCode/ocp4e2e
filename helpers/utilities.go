@@ -3,6 +3,7 @@ package helpers
 import (
 	"bufio"
 	goctx "context"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -868,18 +869,18 @@ func assertResultsWithFileGeneration(
 }
 
 // loadAssertionsFromPath loads rule assertions from a specific file path.
-func loadAssertionsFromPath(filePath string) (*RuleTestResults, error) {
-	data, err := ioutil.ReadFile(filePath)
+func loadAssertionsFromPath(p string) (*RuleTestResults, error) {
+	data, err := ioutil.ReadFile(p)
 	if err != nil {
 		return nil, err
 	}
 
-	log.Printf("Using %s as assertion file", filePath)
+	log.Printf("Using %s as assertion file", p)
 
 	var assertions RuleTestResults
 	err = yaml.Unmarshal(data, &assertions)
 	if err != nil {
-		return nil, fmt.Errorf("could not parse assertion file %s: %w", filePath, err)
+		return nil, fmt.Errorf("could not parse assertion file %s: %w", p, err)
 	}
 
 	return &assertions, nil
@@ -1036,7 +1037,6 @@ func ApplyManualRemediations(tc *testConfig.TestConfig, c dynclient.Client, resu
 }
 
 func applyRemediation(tc *testConfig.TestConfig, remediationPath string, timeout time.Duration) error {
-
 	ctx, cancel := goctx.WithTimeout(goctx.Background(), timeout)
 	defer cancel()
 
@@ -1094,7 +1094,7 @@ func findRulePath(tc *testConfig.TestConfig, ruleName string) (rulePath string, 
 		}
 		return nil
 	})
-	if err != filepath.SkipAll && err != nil || !found {
+	if err != nil && errors.Is(err, filepath.SkipAll) || !found {
 		return "", false
 	}
 	return rulePath, found
@@ -1717,31 +1717,31 @@ func CreateResultMap(_ *testConfig.TestConfig, c dynclient.Client, suiteName str
 
 // SaveResultAsYAML saves YAML data about the scan results to a file in the configured log directory.
 func SaveResultAsYAML(tc *testConfig.TestConfig, results map[string]string, filename string) error {
-	filePath := path.Join(tc.LogDir, filename)
+	p := path.Join(tc.LogDir, filename)
 	yamlData, err := yaml.Marshal(results)
 	if err != nil {
 		return fmt.Errorf("failed to marshal results to YAML: %w", err)
 	}
-	err = ioutil.WriteFile(filePath, yamlData, 0o600)
+	err = ioutil.WriteFile(p, yamlData, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write YAML file: %w", err)
 	}
-	log.Printf("Saved YAML data to %s", filePath)
+	log.Printf("Saved YAML data to %s", p)
 	return nil
 }
 
 // SaveMismatchesAsYAML saves YAML data about mismatched assertions to a file in the configured log directory.
 func SaveMismatchesAsYAML(tc *testConfig.TestConfig, mismatchedAssertions []AssertionMismatch, filename string) error {
-	filePath := path.Join(tc.LogDir, filename)
+	p := path.Join(tc.LogDir, filename)
 	yamlData, err := yaml.Marshal(mismatchedAssertions)
 	if err != nil {
 		return fmt.Errorf("failed to marshal results to YAML: %w", err)
 	}
-	err = ioutil.WriteFile(filePath, yamlData, 0o600)
+	err = ioutil.WriteFile(p, yamlData, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write YAML file: %w", err)
 	}
-	log.Printf("Saved YAML data to %s", filePath)
+	log.Printf("Saved YAML data to %s", p)
 	return nil
 }
 
@@ -1771,15 +1771,14 @@ func GenerateMismatchReport(
 	for i, mismatch := range mismatchedAssertions {
 		report.WriteString(fmt.Sprintf("### %d. %s\n\n", i+1, mismatch.CheckResultName))
 
-		ruleName, _ := getRuleNameFromResultName(tc, c, mismatch.CheckResultName)
-		if ruleName != "" {
+		ruleName, err := getRuleNameFromResultName(tc, c, mismatch.CheckResultName)
+		if err == nil {
 			rulePath, found := findRulePath(tc, ruleName)
 			if found {
 				relativePath := path.Join(strings.TrimPrefix(rulePath, tc.ContentDir+"/"), "rule.yml")
 				link := fmt.Sprintf(upstreamRepo, relativePath)
 				report.WriteString(fmt.Sprintf("- **Rule Source:** [%s](%s)\n", ruleName, link))
 			}
-
 		}
 
 		report.WriteString(fmt.Sprintf("- **Expected Result:** `%v`\n", mismatch.ExpectedResult))
@@ -1791,15 +1790,15 @@ func GenerateMismatchReport(
 		report.WriteString("\n")
 	}
 
-	filename := fmt.Sprintf("%s-report.md", bindingName)
-	filePath := path.Join(tc.LogDir, filename)
+	f := fmt.Sprintf("%s-report.md", bindingName)
+	p := path.Join(tc.LogDir, f)
 
-	err := ioutil.WriteFile(filePath, []byte(report.String()), 0o600)
+	err := ioutil.WriteFile(p, []byte(report.String()), 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write markdown report: %w", err)
 	}
 
-	log.Printf("Generated compliance report: %s", filePath)
+	log.Printf("Generated compliance report: %s", p)
 
 	// Convert markdown to HTML and save
 	htmlContent := convertMarkdownToHTML(report.String())
@@ -1815,7 +1814,6 @@ func GenerateMismatchReport(
 	return nil
 }
 
-// convertMarkdownToHTML converts basic markdown to HTML
 func convertMarkdownToHTML(markdown string) string {
 	html := markdown
 
