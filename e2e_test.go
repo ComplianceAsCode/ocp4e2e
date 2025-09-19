@@ -2,6 +2,7 @@ package ocp4e2e
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"testing"
@@ -76,19 +77,38 @@ func TestPlatformCompliance(t *testing.T) {
 		t.Fatalf("Failed to wait for compliance suite: %s", err)
 	}
 
-	err = helpers.SaveCheckResults(tc, c, platformBindingName, "initial-results")
+	initialResults, err := helpers.CreateResultMap(tc, c, platformBindingName)
 	if err != nil {
-		t.Fatalf("Failed to save initial scan results.")
+		t.Fatalf("Failed to create result map: %s", err)
+	}
+	err = helpers.SaveResultAsYAML(tc, initialResults, "initial-platform-results.yaml")
+	if err != nil {
+		t.Fatalf("Failed to save initial platform scan results.")
 	}
 
-	err = helpers.VerifyPlatformScanResults(tc, c, platformBindingName)
+	afterRemediation := false
+
+	mismatchedAssertions, err := helpers.VerifyPlatformScanResults(tc, c, initialResults, afterRemediation)
 	if err != nil {
 		t.Fatalf("Failed to verify platform scan results: %s", err)
 	}
 
+	// Write any mismatched assertions to disk
+	if len(mismatchedAssertions) > 0 {
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, "initial-platform-mismatches.yaml")
+		if err != nil {
+			t.Fatalf("Failed to save initial mismatched platform assertions: %s", err)
+		}
+	}
+
+	assertionFile := fmt.Sprintf("%s-%s-%s-rule-assertions.yaml", tc.Platform, tc.Version, "platform")
 	// Exit early if bypassing remediations
 	if tc.BypassRemediations {
 		t.Log("Bypassing remediation application and rescan")
+		err := helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, nil)
+		if err != nil {
+			t.Fatalf("Failed to generate assertion file: %s", err)
+		}
 		return
 	}
 
@@ -97,16 +117,34 @@ func TestPlatformCompliance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to apply platform remediations: %s", err)
 	}
+	afterRemediation = true
 
-	// Verify results after remediation
-	err = helpers.VerifyPlatformScanResults(tc, c, platformBindingName)
+	finalResults, err := helpers.CreateResultMap(tc, c, platformBindingName)
 	if err != nil {
-		t.Fatalf("Failed to verify platform scan results after remediation: %s", err)
+		t.Fatalf("Failed to create result map: %s", err)
+	}
+	err = helpers.SaveResultAsYAML(tc, finalResults, "final-platform-results.yaml")
+	if err != nil {
+		t.Fatalf("Failed to save final platform scan results.")
 	}
 
-	err = helpers.SaveCheckResults(tc, c, platformBindingName, "final-results")
+	mismatchedAssertions, err = helpers.VerifyPlatformScanResults(tc, c, finalResults, afterRemediation)
 	if err != nil {
-		t.Fatalf("Failed to save final scan results.")
+		t.Fatalf("Failed to verify platform scan results: %s", err)
+	}
+
+	// Write any mismatched assertions to disk
+	if len(mismatchedAssertions) > 0 {
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, "final-platform-mismatches.yaml")
+		if err != nil {
+			t.Fatalf("Failed to save final mismatched assertions: %s", err)
+		}
+		t.Fatal("Actual cluster compliance state didn't match expected state")
+	}
+
+	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, finalResults)
+	if err != nil {
+		t.Fatalf("Failed to generate assertion file: %s", err)
 	}
 }
 
@@ -141,19 +179,38 @@ func TestNodeCompliance(t *testing.T) {
 		t.Fatalf("Failed to wait for compliance suite: %s", err)
 	}
 
-	err = helpers.SaveCheckResults(tc, c, nodeBindingName, "initial-results")
+	initialResults, err := helpers.CreateResultMap(tc, c, nodeBindingName)
 	if err != nil {
-		t.Fatalf("Failed to save initial scan results.")
+		t.Fatalf("Failed to create result map: %s", err)
+	}
+	err = helpers.SaveResultAsYAML(tc, initialResults, "initial-node-results.yaml")
+	if err != nil {
+		t.Fatalf("Failed to save initial node scan results.")
 	}
 
-	err = helpers.VerifyNodeScanResults(tc, c, nodeBindingName)
+	afterRemediation := false
+
+	mismatchedAssertions, err := helpers.VerifyNodeScanResults(tc, c, initialResults, afterRemediation)
 	if err != nil {
 		t.Fatalf("Failed to verify node scan results: %s", err)
 	}
 
+	// Write any mismatched assertions to disk
+	if len(mismatchedAssertions) > 0 {
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, "initial-node-mismatches.yaml")
+		if err != nil {
+			t.Fatalf("Failed to save initial mismatched node assertions: %s", err)
+		}
+	}
+
+	assertionFile := fmt.Sprintf("%s-%s-%s-rule-assertions.yaml", tc.Platform, tc.Version, "node")
 	// Exit early if bypassing remediations
 	if tc.BypassRemediations {
 		t.Log("Bypassing remediation application and rescan")
+		err := helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, nil)
+		if err != nil {
+			t.Fatalf("Failed to generate assertion file: %s", err)
+		}
 		return
 	}
 
@@ -162,18 +219,35 @@ func TestNodeCompliance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to apply node remediations: %s", err)
 	}
+	afterRemediation = true
 
-	// Verify results after remediation
-	err = helpers.VerifyNodeScanResults(tc, c, nodeBindingName)
+	finalResults, err := helpers.CreateResultMap(tc, c, nodeBindingName)
 	if err != nil {
-		t.Fatalf("Failed to verify node scan results after remediation: %s", err)
+		t.Fatalf("Failed to create result map: %s", err)
+	}
+	err = helpers.SaveResultAsYAML(tc, finalResults, "final-node-results.yaml")
+	if err != nil {
+		t.Fatalf("Failed to save final node scan results.")
 	}
 
-	err = helpers.SaveCheckResults(tc, c, nodeBindingName, "final-results")
+	mismatchedAssertions, err = helpers.VerifyNodeScanResults(tc, c, finalResults, afterRemediation)
 	if err != nil {
-		t.Fatalf("Failed to save final scan results.")
+		t.Fatalf("Failed to verify node scan results: %s", err)
 	}
 
+	// Write any mismatched assertions to disk
+	if len(mismatchedAssertions) > 0 {
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, "final-node-mismatches.yaml")
+		if err != nil {
+			t.Fatalf("Failed to save final mismatched assertions: %s", err)
+		}
+		t.Fatal("Actual cluster compliance state didn't match expected state")
+	}
+
+	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, finalResults)
+	if err != nil {
+		t.Fatalf("Failed to generate assertion file: %s", err)
+	}
 }
 
 func TestProfile(t *testing.T) {
@@ -215,10 +289,31 @@ func TestProfile(t *testing.T) {
 		t.Fatalf("Failed to wait for compliance suite %s: %s", bindingName, err)
 	}
 
+	initialResults, err := helpers.CreateResultMap(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to create result map: %s", err)
+	}
+
+	afterRemediation := false
 	// Verify scan results
-	err = helpers.VerifyScanResults(tc, c, bindingName, profileFQN)
+	mismatchedAssertions, err := helpers.VerifyScanResults(tc, c, profileFQN, initialResults, afterRemediation)
 	if err != nil {
 		t.Fatalf("Failed to verify scan results for profile %s: %s", profileFQN, err)
+	}
+
+	// Write any mismatched assertions to disk
+	mismatchedAssertionFileName := fmt.Sprintf("iniital-%s-mismatches.yaml", profileFQN)
+	if len(mismatchedAssertions) > 0 {
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, mismatchedAssertionFileName)
+		if err != nil {
+			t.Fatalf("Failed to save initial mismatched profile assertions: %s", err)
+		}
+	}
+
+	assertionFile := fmt.Sprintf("%s-%s-rule-assertions.yaml", profileFQN, tc.Version)
+	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, nil)
+	if err != nil {
+		t.Fatalf("Failed to generate assertion file: %s", err)
 	}
 
 	// Clean up the scan binding
@@ -273,22 +368,65 @@ func TestProfileRemediations(t *testing.T) {
 		t.Fatalf("Failed to wait for compliance suite %s: %s", bindingName, err)
 	}
 
+	initialResults, err := helpers.CreateResultMap(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to create result map: %s", err)
+	}
+	err = helpers.SaveResultAsYAML(tc, initialResults, fmt.Sprintf("initial-%s-results.yaml", profileFQN))
+	if err != nil {
+		t.Fatalf("Failed to save initial %s scan results.", profileFQN)
+	}
+
+	afterRemediation := false
 	// Verify scan results
-	err = helpers.VerifyScanResults(tc, c, bindingName, profileFQN)
+	mismatchedAssertions, err := helpers.VerifyScanResults(tc, c, profileFQN, initialResults, afterRemediation)
 	if err != nil {
 		t.Fatalf("Failed to verify scan results for profile %s: %s", profileFQN, err)
+	}
+
+	// Write any mismatched assertions to disk
+	if len(mismatchedAssertions) > 0 {
+		mismatchedAssertionFileName := fmt.Sprintf("initial-%s-mismatches.yaml", profileFQN)
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, mismatchedAssertionFileName)
+		if err != nil {
+			t.Fatalf("Failed to save initial mismatched %s assertions: %s", profileFQN, err)
+		}
 	}
 
 	// Apply remediations with dependency resolution (includes rescanning)
 	err = helpers.ApplyRemediationsWithDependencies(tc, c, bindingName)
 	if err != nil {
-		t.Fatalf("Failed to apply node remediations: %s", err)
+		t.Fatalf("Failed to apply %s remediations: %s", profileFQN, err)
+	}
+	afterRemediation = true
+
+	finalResults, err := helpers.CreateResultMap(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to create result map: %s", err)
+	}
+	err = helpers.SaveResultAsYAML(tc, finalResults, fmt.Sprintf("final-%s-results.yaml", profileFQN))
+	if err != nil {
+		t.Fatalf("Failed to save final %s scan results.", profileFQN)
 	}
 
 	// Verify results after remediation
-	err = helpers.VerifyNodeScanResults(tc, c, bindingName)
+	mismatchedAssertions, err = helpers.VerifyScanResults(tc, c, profileFQN, finalResults, afterRemediation)
 	if err != nil {
-		t.Fatalf("Failed to verify node scan results after remediation: %s", err)
+		t.Fatalf("Failed to verify scan results for profile %s: %s", profileFQN, err)
+	}
+
+	if len(mismatchedAssertions) > 0 {
+		mismatchedAssertionFileName := fmt.Sprintf("final-%s-mismatches.yaml", profileFQN)
+		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, mismatchedAssertionFileName)
+		if err != nil {
+			t.Fatalf("Failed to save final mismatched assertions: %s", err)
+		}
+	}
+
+	assertionFile := fmt.Sprintf("%s-%s-rule-assertions.yaml", profileFQN, tc.Version)
+	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, finalResults)
+	if err != nil {
+		t.Fatalf("Failed to generate assertion file: %s", err)
 	}
 
 	// Clean up the scan binding

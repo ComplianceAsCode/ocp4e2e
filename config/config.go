@@ -25,6 +25,7 @@ type TestConfig struct {
 	Platform              string
 	ContentImage          string
 	ContentDir            string
+	LogDir                string
 	InstallOperator       bool
 	BypassRemediations    bool
 	TestType              string
@@ -38,6 +39,7 @@ var (
 	profile            string
 	platform           string
 	contentImage       string
+	logDir             string
 	installOperator    bool
 	bypassRemediations bool
 	testType           string
@@ -51,6 +53,12 @@ func NewTestConfig() *TestConfig {
 	if err != nil {
 		log.Fatalf("failed to set version: %s", err)
 	}
+	// Set default log directory if not provided
+	defaultLogDir := "/logs/artifacts"
+	if logDir == "" {
+		logDir = defaultLogDir
+	}
+
 	return &TestConfig{
 		APIPollInterval:       5 * time.Second,
 		E2eSettings:           "e2e-debug",
@@ -62,6 +70,7 @@ func NewTestConfig() *TestConfig {
 		Platform:              platform,
 		ContentImage:          contentImage,
 		ContentDir:            "", // Will be set during setup
+		LogDir:                logDir,
 		InstallOperator:       installOperator,
 		BypassRemediations:    bypassRemediations,
 		TestType:              testType,
@@ -79,6 +88,7 @@ func DefineFlags() {
 		"quay.io/redhat-user-workloads/ocp-isc-tenant/compliance-operator-content-dev:master",
 		"The path to the image with the content to test")
 	flag.StringVar(&contentDir, "content-directory", "", "The path to the compliance content directory")
+	flag.StringVar(&logDir, "log-dir", "/logs/artifacts", "The directory where log files and artifacts will be written")
 	flag.BoolVar(&installOperator, "install-operator", true, "Should the test-code install the operator or not? "+
 		"This is useful if you need to test with your own deployment of the operator")
 	flag.BoolVar(&bypassRemediations, "bypass-remediations", false,
