@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/ComplianceAsCode/ocp4e2e/config"
 	"github.com/ComplianceAsCode/ocp4e2e/helpers"
@@ -112,6 +113,15 @@ func TestPlatformCompliance(t *testing.T) {
 		return
 	}
 
+	err = helpers.ApplyManualRemediations(tc, c, initialResults)
+	if err != nil {
+		t.Fatalf("Failed to apply manual remediations: %s", err)
+	}
+
+	manualRemediationWaitTime := 30 * time.Second
+	log.Printf("Waiting %s for manual remediations to take effect", manualRemediationWaitTime)
+	time.Sleep(manualRemediationWaitTime)
+
 	// Apply remediations with dependency resolution (includes rescanning)
 	err = helpers.ApplyRemediationsWithDependencies(tc, c, platformBindingName)
 	if err != nil {
@@ -213,6 +223,15 @@ func TestNodeCompliance(t *testing.T) {
 		}
 		return
 	}
+
+	err = helpers.ApplyManualRemediations(tc, c, initialResults)
+	if err != nil {
+		t.Fatalf("Failed to apply manual remediations: %s", err)
+	}
+
+	manualRemediationWaitTime := 30 * time.Second
+	log.Printf("Waiting %s for manual remediations to take effect", manualRemediationWaitTime)
+	time.Sleep(manualRemediationWaitTime)
 
 	// Apply remediations with dependency resolution (includes rescanning)
 	err = helpers.ApplyRemediationsWithDependencies(tc, c, nodeBindingName)
@@ -392,6 +411,15 @@ func TestProfileRemediations(t *testing.T) {
 			t.Fatalf("Failed to save initial mismatched %s assertions: %s", profileFQN, err)
 		}
 	}
+
+	err = helpers.ApplyManualRemediations(tc, c, initialResults)
+	if err != nil {
+		t.Fatalf("Failed to apply manual remediations: %s", err)
+	}
+
+	manualRemediationWaitTime := 30 * time.Second
+	log.Printf("Waiting %s for manual remediations to take effect", manualRemediationWaitTime)
+	time.Sleep(manualRemediationWaitTime)
 
 	// Apply remediations with dependency resolution (includes rescanning)
 	err = helpers.ApplyRemediationsWithDependencies(tc, c, bindingName)

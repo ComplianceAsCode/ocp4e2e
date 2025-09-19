@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	backoff "github.com/cenkalti/backoff/v4"
@@ -38,6 +40,7 @@ import (
 )
 
 var (
+	assertionsPath           = "/tests/assertions/ocp4/"
 	resourcesPath            = "ocp-resources"
 	namespaceFileName        = "compliance-operator-ns.yaml"
 	catalogSourceFileName    = "compliance-operator-catalog-source.yaml"
@@ -817,10 +820,13 @@ func assertScanResults(
 ) ([]AssertionMismatch, error) {
 	var assertionFile string
 	if tc.Profile != "" {
-		assertionFile = fmt.Sprintf("%s-%s.yaml", tc.Profile, tc.Version)
+		assertionFile = path.Join(tc.ContentDir, assertionsPath,
+			fmt.Sprintf("%s-%s.yaml", tc.Profile, tc.Version))
 	} else {
 		// For scan assertions, we use the simple file naming convention
-		assertionFile = fmt.Sprintf("%s-%s-%s-rule-assertions.yaml", tc.Platform, tc.Version, scanType)
+		assertionFile = path.Join(tc.ContentDir, assertionsPath,
+			fmt.Sprintf("%s-%s-%s-rule-assertions.yaml",
+				tc.Platform, tc.Version, scanType))
 	}
 
 	mismatchedAssertions, err := assertResultsWithFileGeneration(tc, results, assertionFile, afterRemediation)
@@ -866,6 +872,8 @@ func loadAssertionsFromPath(filePath string) (*RuleTestResults, error) {
 		return nil, err
 	}
 
+	log.Printf("Using %s as assertion file", filePath)
+
 	var assertions RuleTestResults
 	err = yaml.Unmarshal(data, &assertions)
 	if err != nil {
@@ -897,7 +905,7 @@ func verifyResultsAgainstAssertions(
 		if !ok {
 			return nil, fmt.Errorf("expected string, got %T", expected.DefaultResult)
 		}
-		if afterRemediations {
+		if afterRemediations && expected.ResultAfterRemediation != nil {
 			expectedResult, ok = expected.ResultAfterRemediation.(string)
 			if !ok {
 				return nil, fmt.Errorf("expected string, got %T", expected.ResultAfterRemediation)
@@ -977,6 +985,134 @@ func GenerateAssertionFileFromResults(
 		len(assertions.RuleResults),
 	)
 	return nil
+}
+
+func ApplyManualRemediations(tc *testConfig.TestConfig, c dynclient.Client, results map[string]string) error {
+	var wg sync.WaitGroup
+	errorChannel := make(chan error, len(results))
+
+	log.Printf("Applying manual remediations")
+	for resultName, resultValue := range results {
+		// We should only try applying a manual remediation if the rule
+		// failed. Ignore all other states.
+		if resultValue != "FAIL" {
+			continue
+		}
+		ruleName, err := getRuleNameFromResultName(tc, c, resultName)
+		if err != nil {
+			return err
+		}
+
+		// Determine if rule contains a manual remediation in
+		// ComplianceAsCode/content -- if we don't find one,
+		// just move on to the next result since not all rules
+		// are guaranteed to have a remediation
+		remediationPath, found := findManualRemediation(tc, ruleName)
+		if !found {
+			continue
+		}
+		log.Printf("Applying manual remediation %s", remediationPath)
+
+		wg.Add(1)
+		go func(path string) {
+			defer wg.Done()
+			if err := applyRemediation(tc, path, tc.ManualRemediationTimeout); err != nil {
+				errorChannel <- err
+			}
+		}(remediationPath)
+	}
+
+	wg.Wait()
+	close(errorChannel)
+
+	for err := range errorChannel {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyRemediation(tc *testConfig.TestConfig, remediationPath string, timeout time.Duration) error {
+
+	ctx, cancel := goctx.WithTimeout(goctx.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", remediationPath)
+	// We do this because some remediations need to access the root of the
+	// content directory
+	cmd.Env = append(os.Environ(), fmt.Sprintf("ROOT_DIR=%s", tc.ContentDir))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() == goctx.DeadlineExceeded {
+			return fmt.Errorf("timed out waiting for manual remediation %s to apply", remediationPath)
+		}
+		return fmt.Errorf("failed to apply manual remediation %s: %w\nOutput: %s",
+			remediationPath, err, string(output))
+	}
+	log.Printf("Applied remediation %s", remediationPath)
+	return nil
+}
+
+func getRuleNameFromResultName(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	resultName string,
+) (ruleName string, err error) {
+	key := types.NamespacedName{
+		Name:      resultName,
+		Namespace: tc.OperatorNamespace.Namespace,
+	}
+	resultCR := &cmpv1alpha1.ComplianceCheckResult{}
+	err = c.Get(goctx.TODO(), key, resultCR)
+	if err != nil {
+		return "", fmt.Errorf("failed to get ComplianceCheckResult %s: %w", resultName, err)
+	}
+	ruleName, exists := resultCR.Annotations[cmpv1alpha1.ComplianceCheckResultRuleAnnotation]
+	if !exists {
+		return "", fmt.Errorf("failed to derive rule name from result %s", ruleName)
+	}
+
+	// Replace - with _ so we can find the directory name in ComplianceAsCode/content
+	ruleName = strings.ReplaceAll(ruleName, "-", "_")
+	return ruleName, nil
+}
+
+func findRulePath(tc *testConfig.TestConfig, ruleName string) (rulePath string, found bool) {
+	found = false
+	err := filepath.WalkDir(tc.ContentDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == ruleName {
+			rulePath = path
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != filepath.SkipAll && err != nil || !found {
+		return "", false
+	}
+	return rulePath, found
+}
+
+func findManualRemediation(tc *testConfig.TestConfig, ruleName string) (remediationPath string, found bool) {
+	rulePath, found := findRulePath(tc, ruleName)
+	if !found {
+		return "", found
+	}
+
+	// If we found a rulePath, let's string together a remediation path and
+	// see if it exists. If not, then we'll just return an empty string and
+	// move on to the next result since there isn't a manual remediation to
+	// apply.
+	remediationPath = path.Join(rulePath, "tests", "ocp4", "e2e-remediation.sh")
+	if _, err := os.Stat(remediationPath); err != nil {
+		return "", false
+	}
+	return remediationPath, found
 }
 
 // ApplyRemediationsWithDependencies handles remediation application with

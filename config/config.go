@@ -15,34 +15,36 @@ import (
 // TestConfig holds all the configuration arguments for the test suite
 // that can be passed between helper and test packages.
 type TestConfig struct {
-	APIPollInterval       time.Duration
-	E2eSettings           string
-	TestProfileBundleName string
-	OpenShiftBundleName   string
-	RHCOSBundleName       string
-	Profile               string
-	Product               string
-	Platform              string
-	ContentImage          string
-	ContentDir            string
-	LogDir                string
-	InstallOperator       bool
-	BypassRemediations    bool
-	TestType              string
-	OperatorNamespace     types.NamespacedName
-	Version               string
+	APIPollInterval          time.Duration
+	E2eSettings              string
+	TestProfileBundleName    string
+	OpenShiftBundleName      string
+	RHCOSBundleName          string
+	Profile                  string
+	Product                  string
+	Platform                 string
+	ContentImage             string
+	ContentDir               string
+	LogDir                   string
+	InstallOperator          bool
+	BypassRemediations       bool
+	TestType                 string
+	OperatorNamespace        types.NamespacedName
+	Version                  string
+	ManualRemediationTimeout time.Duration
 }
 
 var (
-	contentDir         string
-	product            string
-	profile            string
-	platform           string
-	contentImage       string
-	logDir             string
-	installOperator    bool
-	bypassRemediations bool
-	testType           string
+	contentDir               string
+	product                  string
+	profile                  string
+	platform                 string
+	contentImage             string
+	logDir                   string
+	installOperator          bool
+	bypassRemediations       bool
+	testType                 string
+	manualRemediationTimeout time.Duration
 )
 
 // NewTestConfig creates a new TestConfig from the parsed flags and sets the
@@ -60,22 +62,23 @@ func NewTestConfig() *TestConfig {
 	}
 
 	return &TestConfig{
-		APIPollInterval:       5 * time.Second,
-		E2eSettings:           "e2e-debug",
-		TestProfileBundleName: "e2e",
-		OpenShiftBundleName:   "e2e-ocp4",
-		RHCOSBundleName:       "e2e-rhcos4",
-		Profile:               profile,
-		Product:               product,
-		Platform:              platform,
-		ContentImage:          contentImage,
-		ContentDir:            "", // Will be set during setup
-		LogDir:                logDir,
-		InstallOperator:       installOperator,
-		BypassRemediations:    bypassRemediations,
-		TestType:              testType,
-		OperatorNamespace:     types.NamespacedName{Name: "compliance-operator", Namespace: "openshift-compliance"},
-		Version:               version,
+		APIPollInterval:          5 * time.Second,
+		E2eSettings:              "e2e-debug",
+		TestProfileBundleName:    "e2e",
+		OpenShiftBundleName:      "e2e-ocp4",
+		RHCOSBundleName:          "e2e-rhcos4",
+		Profile:                  profile,
+		Product:                  product,
+		Platform:                 platform,
+		ContentImage:             contentImage,
+		ContentDir:               contentDir,
+		LogDir:                   logDir,
+		InstallOperator:          installOperator,
+		BypassRemediations:       bypassRemediations,
+		TestType:                 testType,
+		OperatorNamespace:        types.NamespacedName{Name: "compliance-operator", Namespace: "openshift-compliance"},
+		Version:                  version,
+		ManualRemediationTimeout: manualRemediationTimeout,
 	}
 }
 
@@ -94,6 +97,8 @@ func DefineFlags() {
 	flag.BoolVar(&bypassRemediations, "bypass-remediations", false,
 		"Do not apply remediations and summarize results after the first scan")
 	flag.StringVar(&testType, "test-type", "all", "Type of rules to test: 'platform', 'node', or 'all' (default)")
+	flag.DurationVar(&manualRemediationTimeout,
+		"manual-remediation-timeout", 30*time.Minute, "Timeout for manual remediation scripts")
 }
 
 // ValidateFlags checks that required flags are provided.
