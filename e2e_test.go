@@ -149,6 +149,9 @@ func TestPlatformCompliance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to save final mismatched assertions: %s", err)
 		}
+		if err = helpers.GenerateMismatchReport(tc, c, mismatchedAssertions, platformBindingName); err != nil {
+			t.Fatalf("Failed to generate test report: %s", err)
+		}
 		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
@@ -260,6 +263,9 @@ func TestNodeCompliance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to save final mismatched assertions: %s", err)
 		}
+		if err = helpers.GenerateMismatchReport(tc, c, mismatchedAssertions, nodeBindingName); err != nil {
+			t.Fatalf("Failed to generate test report: %s", err)
+		}
 		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
@@ -327,6 +333,10 @@ func TestProfile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to save initial mismatched profile assertions: %s", err)
 		}
+		if err = helpers.GenerateMismatchReport(tc, c, mismatchedAssertions, bindingName); err != nil {
+			t.Fatalf("Failed to generate test report: %s", err)
+		}
+		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
 	assertionFile := fmt.Sprintf("%s-%s-rule-assertions.yaml", profileFQN, tc.Version)
@@ -449,6 +459,10 @@ func TestProfileRemediations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to save final mismatched assertions: %s", err)
 		}
+		if err = helpers.GenerateMismatchReport(tc, c, mismatchedAssertions, bindingName); err != nil {
+			t.Fatalf("Failed to generate test report: %s", err)
+		}
+		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
 	assertionFile := fmt.Sprintf("%s-%s-rule-assertions.yaml", profileFQN, tc.Version)
