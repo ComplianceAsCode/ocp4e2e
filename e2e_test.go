@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/ComplianceAsCode/ocp4e2e/config"
 	"github.com/ComplianceAsCode/ocp4e2e/helpers"
@@ -112,6 +113,15 @@ func TestPlatformCompliance(t *testing.T) {
 		return
 	}
 
+	err = helpers.ApplyManualRemediations(tc, c, initialResults)
+	if err != nil {
+		t.Fatalf("Failed to apply manual remediations: %s", err)
+	}
+
+	manualRemediationWaitTime := 30 * time.Second
+	log.Printf("Waiting %s for manual remediations to take effect", manualRemediationWaitTime)
+	time.Sleep(manualRemediationWaitTime)
+
 	// Apply remediations with dependency resolution (includes rescanning)
 	err = helpers.ApplyRemediationsWithDependencies(tc, c, platformBindingName)
 	if err != nil {
@@ -138,6 +148,9 @@ func TestPlatformCompliance(t *testing.T) {
 		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, "final-platform-mismatches.yaml")
 		if err != nil {
 			t.Fatalf("Failed to save final mismatched assertions: %s", err)
+		}
+		if err = helpers.GenerateMismatchReport(tc, c, mismatchedAssertions, platformBindingName); err != nil {
+			t.Fatalf("Failed to generate test report: %s", err)
 		}
 		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
@@ -214,6 +227,15 @@ func TestNodeCompliance(t *testing.T) {
 		return
 	}
 
+	err = helpers.ApplyManualRemediations(tc, c, initialResults)
+	if err != nil {
+		t.Fatalf("Failed to apply manual remediations: %s", err)
+	}
+
+	manualRemediationWaitTime := 30 * time.Second
+	log.Printf("Waiting %s for manual remediations to take effect", manualRemediationWaitTime)
+	time.Sleep(manualRemediationWaitTime)
+
 	// Apply remediations with dependency resolution (includes rescanning)
 	err = helpers.ApplyRemediationsWithDependencies(tc, c, nodeBindingName)
 	if err != nil {
@@ -240,6 +262,9 @@ func TestNodeCompliance(t *testing.T) {
 		err = helpers.SaveMismatchesAsYAML(tc, mismatchedAssertions, "final-node-mismatches.yaml")
 		if err != nil {
 			t.Fatalf("Failed to save final mismatched assertions: %s", err)
+		}
+		if err = helpers.GenerateMismatchReport(tc, c, mismatchedAssertions, nodeBindingName); err != nil {
+			t.Fatalf("Failed to generate test report: %s", err)
 		}
 		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
@@ -308,6 +333,10 @@ func TestProfile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to save initial mismatched profile assertions: %s", err)
 		}
+		if err = helpers.GenerateMismatchReport(tc, c, mismatchedAssertions, bindingName); err != nil {
+			t.Fatalf("Failed to generate test report: %s", err)
+		}
+		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
 	assertionFile := fmt.Sprintf("%s-%s-rule-assertions.yaml", profileFQN, tc.Version)
@@ -393,6 +422,15 @@ func TestProfileRemediations(t *testing.T) {
 		}
 	}
 
+	err = helpers.ApplyManualRemediations(tc, c, initialResults)
+	if err != nil {
+		t.Fatalf("Failed to apply manual remediations: %s", err)
+	}
+
+	manualRemediationWaitTime := 30 * time.Second
+	log.Printf("Waiting %s for manual remediations to take effect", manualRemediationWaitTime)
+	time.Sleep(manualRemediationWaitTime)
+
 	// Apply remediations with dependency resolution (includes rescanning)
 	err = helpers.ApplyRemediationsWithDependencies(tc, c, bindingName)
 	if err != nil {
@@ -421,6 +459,10 @@ func TestProfileRemediations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to save final mismatched assertions: %s", err)
 		}
+		if err = helpers.GenerateMismatchReport(tc, c, mismatchedAssertions, bindingName); err != nil {
+			t.Fatalf("Failed to generate test report: %s", err)
+		}
+		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
 	assertionFile := fmt.Sprintf("%s-%s-rule-assertions.yaml", profileFQN, tc.Version)

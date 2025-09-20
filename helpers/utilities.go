@@ -3,19 +3,22 @@ package helpers
 import (
 	"bufio"
 	goctx "context"
+	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	cmpapis "github.com/ComplianceAsCode/compliance-operator/pkg/apis"
+	cmpv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
 	backoff "github.com/cenkalti/backoff/v4"
-	cmpapis "github.com/openshift/compliance-operator/pkg/apis"
-	cmpv1alpha1 "github.com/openshift/compliance-operator/pkg/apis/compliance/v1alpha1"
 	mcfg "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io"
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"gopkg.in/yaml.v2"
@@ -38,6 +41,8 @@ import (
 )
 
 var (
+	upstreamRepo             = "https://github.com/ComplianceAsCode/content/tree/master/%s"
+	assertionsPath           = "/tests/assertions/ocp4/"
 	resourcesPath            = "ocp-resources"
 	namespaceFileName        = "compliance-operator-ns.yaml"
 	catalogSourceFileName    = "compliance-operator-catalog-source.yaml"
@@ -89,7 +94,7 @@ func assertContentDirectory(tc *testConfig.TestConfig) error {
 }
 
 func cloneContentDir() (string, error) {
-	dir, tmperr := ioutil.TempDir("", "content-*")
+	dir, tmperr := os.MkdirTemp("", "content-*")
 	if tmperr != nil {
 		return "", fmt.Errorf("couldn't create tmpdir: %w", tmperr)
 	}
@@ -817,10 +822,13 @@ func assertScanResults(
 ) ([]AssertionMismatch, error) {
 	var assertionFile string
 	if tc.Profile != "" {
-		assertionFile = fmt.Sprintf("%s-%s.yaml", tc.Profile, tc.Version)
+		assertionFile = path.Join(tc.ContentDir, assertionsPath,
+			fmt.Sprintf("%s-%s.yaml", tc.Profile, tc.Version))
 	} else {
 		// For scan assertions, we use the simple file naming convention
-		assertionFile = fmt.Sprintf("%s-%s-%s-rule-assertions.yaml", tc.Platform, tc.Version, scanType)
+		assertionFile = path.Join(tc.ContentDir, assertionsPath,
+			fmt.Sprintf("%s-%s-%s-rule-assertions.yaml",
+				tc.Platform, tc.Version, scanType))
 	}
 
 	mismatchedAssertions, err := assertResultsWithFileGeneration(tc, results, assertionFile, afterRemediation)
@@ -860,16 +868,18 @@ func assertResultsWithFileGeneration(
 }
 
 // loadAssertionsFromPath loads rule assertions from a specific file path.
-func loadAssertionsFromPath(filePath string) (*RuleTestResults, error) {
-	data, err := ioutil.ReadFile(filePath)
+func loadAssertionsFromPath(p string) (*RuleTestResults, error) {
+	data, err := os.ReadFile(p)
 	if err != nil {
 		return nil, err
 	}
 
+	log.Printf("Using %s as assertion file", p)
+
 	var assertions RuleTestResults
 	err = yaml.Unmarshal(data, &assertions)
 	if err != nil {
-		return nil, fmt.Errorf("could not parse assertion file %s: %w", filePath, err)
+		return nil, fmt.Errorf("could not parse assertion file %s: %w", p, err)
 	}
 
 	return &assertions, nil
@@ -897,7 +907,7 @@ func verifyResultsAgainstAssertions(
 		if !ok {
 			return nil, fmt.Errorf("expected string, got %T", expected.DefaultResult)
 		}
-		if afterRemediations {
+		if afterRemediations && expected.ResultAfterRemediation != nil {
 			expectedResult, ok = expected.ResultAfterRemediation.(string)
 			if !ok {
 				return nil, fmt.Errorf("expected string, got %T", expected.ResultAfterRemediation)
@@ -966,7 +976,7 @@ func GenerateAssertionFileFromResults(
 	}
 
 	fullPath := path.Join(tc.LogDir, assertionFile)
-	err = ioutil.WriteFile(fullPath, data, 0o600)
+	err = os.WriteFile(fullPath, data, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write assertion file: %w", err)
 	}
@@ -977,6 +987,133 @@ func GenerateAssertionFileFromResults(
 		len(assertions.RuleResults),
 	)
 	return nil
+}
+
+func ApplyManualRemediations(tc *testConfig.TestConfig, c dynclient.Client, results map[string]string) error {
+	var wg sync.WaitGroup
+	errorChannel := make(chan error, len(results))
+
+	log.Printf("Applying manual remediations")
+	for resultName, resultValue := range results {
+		// We should only try applying a manual remediation if the rule
+		// failed. Ignore all other states.
+		if resultValue != "FAIL" {
+			continue
+		}
+		ruleName, err := getRuleNameFromResultName(tc, c, resultName)
+		if err != nil {
+			return err
+		}
+
+		// Determine if rule contains a manual remediation in
+		// ComplianceAsCode/content -- if we don't find one,
+		// just move on to the next result since not all rules
+		// are guaranteed to have a remediation
+		remediationPath, found := findManualRemediation(tc, ruleName)
+		if !found {
+			continue
+		}
+		log.Printf("Applying manual remediation %s", remediationPath)
+
+		wg.Add(1)
+		go func(path string) {
+			defer wg.Done()
+			if err := applyRemediation(tc, path, tc.ManualRemediationTimeout); err != nil {
+				errorChannel <- err
+			}
+		}(remediationPath)
+	}
+
+	wg.Wait()
+	close(errorChannel)
+
+	for err := range errorChannel {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyRemediation(tc *testConfig.TestConfig, remediationPath string, timeout time.Duration) error {
+	ctx, cancel := goctx.WithTimeout(goctx.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", remediationPath)
+	// We do this because some remediations need to access the root of the
+	// content directory
+	cmd.Env = append(os.Environ(), fmt.Sprintf("ROOT_DIR=%s", tc.ContentDir))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() == goctx.DeadlineExceeded {
+			return fmt.Errorf("timed out waiting for manual remediation %s to apply", remediationPath)
+		}
+		return fmt.Errorf("failed to apply manual remediation %s: %w\nOutput: %s",
+			remediationPath, err, string(output))
+	}
+	log.Printf("Applied remediation %s", remediationPath)
+	return nil
+}
+
+func getRuleNameFromResultName(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	resultName string,
+) (ruleName string, err error) {
+	key := types.NamespacedName{
+		Name:      resultName,
+		Namespace: tc.OperatorNamespace.Namespace,
+	}
+	resultCR := &cmpv1alpha1.ComplianceCheckResult{}
+	err = c.Get(goctx.TODO(), key, resultCR)
+	if err != nil {
+		return "", fmt.Errorf("failed to get ComplianceCheckResult %s: %w", resultName, err)
+	}
+	ruleName, exists := resultCR.Annotations[cmpv1alpha1.ComplianceCheckResultRuleAnnotation]
+	if !exists {
+		return "", fmt.Errorf("failed to derive rule name from result %s", ruleName)
+	}
+
+	// Replace - with _ so we can find the directory name in ComplianceAsCode/content
+	ruleName = strings.ReplaceAll(ruleName, "-", "_")
+	return ruleName, nil
+}
+
+func findRulePath(tc *testConfig.TestConfig, ruleName string) (rulePath string, found bool) {
+	found = false
+	err := filepath.WalkDir(tc.ContentDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == ruleName {
+			rulePath = path
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil && errors.Is(err, filepath.SkipAll) || !found {
+		return "", false
+	}
+	return rulePath, found
+}
+
+func findManualRemediation(tc *testConfig.TestConfig, ruleName string) (remediationPath string, found bool) {
+	rulePath, found := findRulePath(tc, ruleName)
+	if !found {
+		return "", found
+	}
+
+	// If we found a rulePath, let's string together a remediation path and
+	// see if it exists. If not, then we'll just return an empty string and
+	// move on to the next result since there isn't a manual remediation to
+	// apply.
+	remediationPath = path.Join(rulePath, "tests", "ocp4", "e2e-remediation.sh")
+	if _, err := os.Stat(remediationPath); err != nil {
+		return "", false
+	}
+	return remediationPath, found
 }
 
 // ApplyRemediationsWithDependencies handles remediation application with
@@ -1579,30 +1716,140 @@ func CreateResultMap(_ *testConfig.TestConfig, c dynclient.Client, suiteName str
 
 // SaveResultAsYAML saves YAML data about the scan results to a file in the configured log directory.
 func SaveResultAsYAML(tc *testConfig.TestConfig, results map[string]string, filename string) error {
-	filePath := path.Join(tc.LogDir, filename)
+	p := path.Join(tc.LogDir, filename)
 	yamlData, err := yaml.Marshal(results)
 	if err != nil {
 		return fmt.Errorf("failed to marshal results to YAML: %w", err)
 	}
-	err = ioutil.WriteFile(filePath, yamlData, 0o600)
+	err = os.WriteFile(p, yamlData, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write YAML file: %w", err)
 	}
-	log.Printf("Saved YAML data to %s", filePath)
+	log.Printf("Saved YAML data to %s", p)
 	return nil
 }
 
 // SaveMismatchesAsYAML saves YAML data about mismatched assertions to a file in the configured log directory.
 func SaveMismatchesAsYAML(tc *testConfig.TestConfig, mismatchedAssertions []AssertionMismatch, filename string) error {
-	filePath := path.Join(tc.LogDir, filename)
+	p := path.Join(tc.LogDir, filename)
 	yamlData, err := yaml.Marshal(mismatchedAssertions)
 	if err != nil {
 		return fmt.Errorf("failed to marshal results to YAML: %w", err)
 	}
-	err = ioutil.WriteFile(filePath, yamlData, 0o600)
+	err = os.WriteFile(p, yamlData, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write YAML file: %w", err)
 	}
-	log.Printf("Saved YAML data to %s", filePath)
+	log.Printf("Saved YAML data to %s", p)
 	return nil
+}
+
+// GenerateMismatchReport creates a markdown report from assertion mismatches.
+func GenerateMismatchReport(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	mismatchedAssertions []AssertionMismatch,
+	bindingName string,
+) error {
+	var report strings.Builder
+
+	// Write header
+	report.WriteString(fmt.Sprintf("# %s Compliance Test Results\n\n", bindingName))
+	report.WriteString(fmt.Sprintf("**Test Run Date:** %s\n", time.Now().Format("2006-01-02 15:04:05 UTC")))
+	report.WriteString(fmt.Sprintf("**Platform:** %s\n", tc.Platform))
+	report.WriteString(fmt.Sprintf("**Version:** %s\n", tc.Version))
+	report.WriteString(fmt.Sprintf("**Content Image:** %s\n\n", tc.ContentImage))
+
+	// Summary section
+	report.WriteString("## Summary\n\n")
+	report.WriteString(fmt.Sprintf("**Total Assertion Failures:** %d\n\n", len(mismatchedAssertions)))
+
+	// Detailed failures section
+	report.WriteString("## Detailed Failures\n\n")
+
+	for i, mismatch := range mismatchedAssertions {
+		report.WriteString(fmt.Sprintf("### %d. %s\n\n", i+1, mismatch.CheckResultName))
+
+		ruleName, err := getRuleNameFromResultName(tc, c, mismatch.CheckResultName)
+		if err == nil {
+			rulePath, found := findRulePath(tc, ruleName)
+			if found {
+				relativePath := path.Join(strings.TrimPrefix(rulePath, tc.ContentDir+"/"), "rule.yml")
+				link := fmt.Sprintf(upstreamRepo, relativePath)
+				report.WriteString(fmt.Sprintf("- **Rule Source:** [%s](%s)\n", ruleName, link))
+			}
+		}
+
+		report.WriteString(fmt.Sprintf("- **Expected Result:** `%v`\n", mismatch.ExpectedResult))
+		report.WriteString(fmt.Sprintf("- **Actual Result:** `%s`\n", mismatch.ActualResult))
+
+		if mismatch.ErrorMessage != "" {
+			report.WriteString(fmt.Sprintf("- **Error Details:** %s\n", mismatch.ErrorMessage))
+		}
+		report.WriteString("\n")
+	}
+
+	f := fmt.Sprintf("%s-report.md", bindingName)
+	p := path.Join(tc.LogDir, f)
+
+	err := os.WriteFile(p, []byte(report.String()), 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to write markdown report: %w", err)
+	}
+
+	log.Printf("Generated compliance report: %s", p)
+
+	// Convert markdown to HTML and save
+	htmlContent := convertMarkdownToHTML(report.String())
+	htmlFilename := fmt.Sprintf("%s-report.html", bindingName)
+	htmlFilePath := path.Join(tc.LogDir, htmlFilename)
+
+	err = os.WriteFile(htmlFilePath, []byte(htmlContent), 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to write HTML report: %w", err)
+	}
+
+	log.Printf("Generated HTML compliance report: %s", htmlFilePath)
+	return nil
+}
+
+func convertMarkdownToHTML(markdown string) string {
+	html := markdown
+
+	// Convert headers BEFORE converting newlines
+	html = regexp.MustCompile(`(?m)^# (.+)$`).ReplaceAllString(html, "<h1>$1</h1>")
+	html = regexp.MustCompile(`(?m)^## (.+)$`).ReplaceAllString(html, "<h2>$1</h2>")
+	html = regexp.MustCompile(`(?m)^### (.+)$`).ReplaceAllString(html, "<h3>$1</h3>")
+
+	// Convert bullet points BEFORE converting newlines
+	html = regexp.MustCompile(`(?m)^- (.+)$`).ReplaceAllString(html, "<li>$1</li>")
+
+	// Convert bold text
+	html = regexp.MustCompile(`\*\*(.+?)\*\*`).ReplaceAllString(html, "<strong>$1</strong>")
+
+	// Convert code blocks
+	html = regexp.MustCompile("`(.+?)`").ReplaceAllString(html, "<code>$1</code>")
+
+	// Convert links
+	html = regexp.MustCompile(`\[(.+?)\]\((.+?)\)`).ReplaceAllString(html, `<a href="$2">$1</a>`)
+
+	// Convert newlines to <br> AFTER other conversions
+	// html = strings.ReplaceAll(html, "\n", "<br>\n")
+
+	// Wrap in basic HTML structure
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+    <title>Compliance Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1, h2, h3 { color: #333; }
+        code { background-color: #f4f4f4; padding: 2px 4px; }
+        li { margin: 5px 0; }
+    </style>
+</head>
+<body>
+%s
+</body>
+</html>`, html)
 }
