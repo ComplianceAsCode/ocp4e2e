@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -17,9 +16,9 @@ import (
 	"sync"
 	"time"
 
+	cmpapis "github.com/ComplianceAsCode/compliance-operator/pkg/apis"
+	cmpv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
 	backoff "github.com/cenkalti/backoff/v4"
-	cmpapis "github.com/openshift/compliance-operator/pkg/apis"
-	cmpv1alpha1 "github.com/openshift/compliance-operator/pkg/apis/compliance/v1alpha1"
 	mcfg "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io"
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"gopkg.in/yaml.v2"
@@ -95,7 +94,7 @@ func assertContentDirectory(tc *testConfig.TestConfig) error {
 }
 
 func cloneContentDir() (string, error) {
-	dir, tmperr := ioutil.TempDir("", "content-*")
+	dir, tmperr := os.MkdirTemp("", "content-*")
 	if tmperr != nil {
 		return "", fmt.Errorf("couldn't create tmpdir: %w", tmperr)
 	}
@@ -870,7 +869,7 @@ func assertResultsWithFileGeneration(
 
 // loadAssertionsFromPath loads rule assertions from a specific file path.
 func loadAssertionsFromPath(p string) (*RuleTestResults, error) {
-	data, err := ioutil.ReadFile(p)
+	data, err := os.ReadFile(p)
 	if err != nil {
 		return nil, err
 	}
@@ -977,7 +976,7 @@ func GenerateAssertionFileFromResults(
 	}
 
 	fullPath := path.Join(tc.LogDir, assertionFile)
-	err = ioutil.WriteFile(fullPath, data, 0o600)
+	err = os.WriteFile(fullPath, data, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write assertion file: %w", err)
 	}
@@ -1722,7 +1721,7 @@ func SaveResultAsYAML(tc *testConfig.TestConfig, results map[string]string, file
 	if err != nil {
 		return fmt.Errorf("failed to marshal results to YAML: %w", err)
 	}
-	err = ioutil.WriteFile(p, yamlData, 0o600)
+	err = os.WriteFile(p, yamlData, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write YAML file: %w", err)
 	}
@@ -1737,7 +1736,7 @@ func SaveMismatchesAsYAML(tc *testConfig.TestConfig, mismatchedAssertions []Asse
 	if err != nil {
 		return fmt.Errorf("failed to marshal results to YAML: %w", err)
 	}
-	err = ioutil.WriteFile(p, yamlData, 0o600)
+	err = os.WriteFile(p, yamlData, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write YAML file: %w", err)
 	}
@@ -1793,7 +1792,7 @@ func GenerateMismatchReport(
 	f := fmt.Sprintf("%s-report.md", bindingName)
 	p := path.Join(tc.LogDir, f)
 
-	err := ioutil.WriteFile(p, []byte(report.String()), 0o600)
+	err := os.WriteFile(p, []byte(report.String()), 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write markdown report: %w", err)
 	}
@@ -1805,7 +1804,7 @@ func GenerateMismatchReport(
 	htmlFilename := fmt.Sprintf("%s-report.html", bindingName)
 	htmlFilePath := path.Join(tc.LogDir, htmlFilename)
 
-	err = ioutil.WriteFile(htmlFilePath, []byte(htmlContent), 0o600)
+	err = os.WriteFile(htmlFilePath, []byte(htmlContent), 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write HTML report: %w", err)
 	}
