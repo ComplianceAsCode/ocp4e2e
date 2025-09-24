@@ -52,7 +52,7 @@ linters:
             - $gostd
             - github.com/ComplianceAsCode/ocp4e2e
             - github.com/cenkalti/backoff/v4
-            - github.com/openshift/compliance-operator
+            - github.com/ComplianceAsCode/compliance-operator
             - github.com/openshift/machine-config-operator
             - gopkg.in/yaml.v2
             - k8s.io
