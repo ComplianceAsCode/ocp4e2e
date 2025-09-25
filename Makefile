@@ -19,23 +19,23 @@ PLATFORM?=ocp
 all: e2e
 
 .PHONY: e2e
-e2e: e2e-platform e2e-node ## Run the e2e tests. This runs both platform and node compliance tests.
+e2e: install-jq e2e-platform e2e-node ## Run the e2e tests. This runs both platform and node compliance tests.
 
 .PHONY: e2e-platform
-e2e-platform: ## Run only platform compliance tests
-	set -o pipefail; go test $(TEST_FLAGS) . -run=^TestPlatformCompliance$$ -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="platform" | tee .e2e-platform-test-results.out
+e2e-platform: install-jq ## Run only platform compliance tests
+	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestPlatformCompliance$$ -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="platform" | tee .e2e-platform-test-results.out
 
 .PHONY: e2e-node
-e2e-node: ## Run only node compliance tests
-	set -o pipefail; go test $(TEST_FLAGS) . -run=^TestNodeCompliance$$ -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="node" | tee .e2e-node-test-results.out
+e2e-node: install-jq ## Run only node compliance tests
+	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestNodeCompliance$$ -install-operator=$(INSTALL_OPERATOR) -bypass-remediations="$(BYPASS_REMEDIATIONS)" -test-type="node" | tee .e2e-node-test-results.out
 
 .PHONY: e2e-profile
-e2e-profile: ## Run TestProfile test only
-	set -o pipefail; go test $(TEST_FLAGS) . -run=^TestProfile$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) | tee .e2e-profile-test-results.out
+e2e-profile: install-jq ## Run TestProfile test only
+	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestProfile$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) | tee .e2e-profile-test-results.out
 
 .PHONY: e2e-profile-remediations
-e2e-profile-remediations: ## Run TestProfile test only
-	set -o pipefail; go test $(TEST_FLAGS) . -run=^TestProfileRemediations$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) | tee .e2e-profile-test-results.out
+e2e-profile-remediations: install-jq ## Run TestProfile test only
+	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestProfileRemediations$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) | tee .e2e-profile-test-results.out
 
 .PHONY: help
 help: ## Show this help screen
@@ -76,3 +76,14 @@ $(BUILD_DIR)/gofumpt: $(BUILD_DIR)
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
+
+.PHONY: install-jq
+install-jq: ## Install jq if not available
+	@if ! command -v jq >/dev/null 2>&1; then \
+		echo "Installing jq..."; \
+		mkdir -p /tmp/bin && \
+		curl -L https://github.com/jqlang/jq/releases/download/jq-1.6/jq-linux64 -o /tmp/bin/jq && \
+		chmod +x /tmp/bin/jq; \
+	else \
+		echo "jq is already installed"; \
+	fi
