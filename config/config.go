@@ -69,7 +69,7 @@ func NewTestConfig() *TestConfig {
 		Product:               product,
 		Platform:              platform,
 		ContentImage:          contentImage,
-		ContentDir:            "", // Will be set during setup
+		ContentDir:            contentDir,
 		LogDir:                logDir,
 		InstallOperator:       installOperator,
 		BypassRemediations:    bypassRemediations,
