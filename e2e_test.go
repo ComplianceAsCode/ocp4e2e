@@ -12,6 +12,8 @@ import (
 	"github.com/ComplianceAsCode/ocp4e2e/helpers"
 )
 
+var tc *config.TestConfig
+
 // TestMain handles the setup and teardown for all tests.
 func TestMain(m *testing.M) {
 	// Define flags
@@ -25,8 +27,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	tc := config.NewTestConfig()
-	// Setup phase
+	// This is a global test configuration that can be shared across tests.
+	// After Setup, it should be immutable so it doesn't effect other
+	// tests, but using a global test config allows us to have a single
+	// content directory, either cloned or passed in explicitly by the
+	// caller because the repository is handled and set once in Setup().
+	tc = config.NewTestConfig()
 	err := helpers.Setup(tc)
 	if err != nil {
 		log.Print(err)
@@ -48,8 +54,6 @@ func TestMain(m *testing.M) {
 }
 
 func TestPlatformCompliance(t *testing.T) {
-	tc := config.NewTestConfig()
-
 	// Skip if test type doesn't include platform tests
 	if tc.TestType != "platform" && tc.TestType != "all" {
 		t.Skipf("Skipping platform tests: -test-type is %s", tc.TestType)
@@ -162,8 +166,6 @@ func TestPlatformCompliance(t *testing.T) {
 }
 
 func TestNodeCompliance(t *testing.T) {
-	tc := config.NewTestConfig()
-
 	// Skip if test type doesn't include node tests
 	if tc.TestType != "node" && tc.TestType != "all" {
 		t.Skipf("Skipping node tests: -test-type is %s", tc.TestType)
@@ -276,8 +278,6 @@ func TestNodeCompliance(t *testing.T) {
 }
 
 func TestProfile(t *testing.T) {
-	tc := config.NewTestConfig()
-
 	// Require profile and product to be specified
 	if tc.Profile == "" {
 		t.Fatal("Profile must be specified using -profile flag or PROFILE environment variable")
@@ -359,8 +359,6 @@ func TestProfile(t *testing.T) {
 }
 
 func TestProfileRemediations(t *testing.T) {
-	tc := config.NewTestConfig()
-
 	// Require profile and product to be specified
 	if tc.Profile == "" {
 		t.Fatal("Profile must be specified using -profile flag or PROFILE environment variable")
