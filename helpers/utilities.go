@@ -43,7 +43,6 @@ import (
 
 var (
 	upstreamRepo             = "https://github.com/ComplianceAsCode/content/tree/master/%s"
-	assertionsPath           = "/tests/assertions/ocp4/"
 	resourcesPath            = "ocp-resources"
 	namespaceFileName        = "compliance-operator-ns.yaml"
 	catalogSourceFileName    = "compliance-operator-catalog-source.yaml"
@@ -775,11 +774,11 @@ func WaitForComplianceSuite(tc *testConfig.TestConfig, c dynclient.Client, suite
 func VerifyScanResults(
 	tc *testConfig.TestConfig,
 	_ dynclient.Client,
-	scanType string,
+	assertionFile string,
 	results map[string]string,
 	afterRemediation bool,
 ) ([]AssertionMismatch, error) {
-	mismatchedAssertions, err := assertScanResults(tc, results, scanType, afterRemediation)
+	mismatchedAssertions, err := assertScanResults(tc, results, assertionFile, afterRemediation)
 	if err != nil {
 		return nil, err
 	}
@@ -790,10 +789,11 @@ func VerifyScanResults(
 func VerifyPlatformScanResults(
 	tc *testConfig.TestConfig,
 	c dynclient.Client,
+	assertionFile string,
 	results map[string]string,
 	afterRemediation bool,
 ) ([]AssertionMismatch, error) {
-	mismatchedAssertions, err := VerifyScanResults(tc, c, "platform", results, afterRemediation)
+	mismatchedAssertions, err := VerifyScanResults(tc, c, assertionFile, results, afterRemediation)
 	if err != nil {
 		return nil, err
 	}
@@ -804,10 +804,11 @@ func VerifyPlatformScanResults(
 func VerifyNodeScanResults(
 	tc *testConfig.TestConfig,
 	c dynclient.Client,
+	assertionFile string,
 	results map[string]string,
 	afterRemediation bool,
 ) ([]AssertionMismatch, error) {
-	mismatchedAssertions, err := VerifyScanResults(tc, c, "node", results, afterRemediation)
+	mismatchedAssertions, err := VerifyScanResults(tc, c, assertionFile, results, afterRemediation)
 	if err != nil {
 		return nil, err
 	}
@@ -818,31 +819,20 @@ func VerifyNodeScanResults(
 func assertScanResults(
 	tc *testConfig.TestConfig,
 	results map[string]string,
-	scanType string,
+	assertionFile string,
 	afterRemediation bool,
 ) ([]AssertionMismatch, error) {
-	var assertionFile string
-	if tc.Profile != "" && tc.Product != "" {
-		assertionFile = path.Join(tc.ContentDir, assertionsPath,
-			fmt.Sprintf("%s-%s-%s.yaml", tc.Product, tc.Profile, tc.Version))
-	} else {
-		// For scan assertions, we use the simple file naming convention
-		assertionFile = path.Join(tc.ContentDir, assertionsPath,
-			fmt.Sprintf("%s-%s-%s-rule-assertions.yaml",
-				tc.Platform, tc.Version, scanType))
-	}
-
-	mismatchedAssertions, err := assertResultsWithFileGeneration(tc, results, assertionFile, afterRemediation)
+	mismatchedAssertions, err := assertResultsAgainstAssertionFile(tc, results, assertionFile, afterRemediation)
 	if err != nil {
 		return nil, err
 	}
 	return mismatchedAssertions, nil
 }
 
-// assertResultsWithFileGeneration is a consolidated function that handles both
+// assertResultsAgainstAssertionFile a consolidated function that handles both
 // profile and scan assertions It can load existing assertion files, verify
 // results against them, and generate assertion files when they don't exist.
-func assertResultsWithFileGeneration(
+func assertResultsAgainstAssertionFile(
 	tc *testConfig.TestConfig,
 	results map[string]string,
 	assertionFile string,

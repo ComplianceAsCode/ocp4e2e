@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"testing"
 	"time"
 
@@ -12,7 +13,10 @@ import (
 	"github.com/ComplianceAsCode/ocp4e2e/helpers"
 )
 
-var tc *config.TestConfig
+var (
+	tc             *config.TestConfig
+	assertionsPath = "/tests/assertions/ocp4/"
+)
 
 // TestMain handles the setup and teardown for all tests.
 func TestMain(m *testing.M) {
@@ -92,8 +96,10 @@ func TestPlatformCompliance(t *testing.T) {
 	}
 
 	afterRemediation := false
+	assertionFileName := fmt.Sprintf("%s-%s-%s.yml", tc.Platform, tc.Version, "platform")
+	assertionFile := path.Join(tc.ContentDir, assertionsPath, assertionFileName)
 
-	mismatchedAssertions, err := helpers.VerifyPlatformScanResults(tc, c, initialResults, afterRemediation)
+	mismatchedAssertions, err := helpers.VerifyPlatformScanResults(tc, c, assertionFile, initialResults, afterRemediation)
 	if err != nil {
 		t.Fatalf("Failed to verify platform scan results: %s", err)
 	}
@@ -106,11 +112,10 @@ func TestPlatformCompliance(t *testing.T) {
 		}
 	}
 
-	assertionFile := fmt.Sprintf("%s-%s-%s.yaml", tc.Platform, tc.Version, "platform")
 	// Exit early if bypassing remediations
 	if tc.BypassRemediations {
 		t.Log("Bypassing remediation application and rescan")
-		err := helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, nil)
+		err := helpers.GenerateAssertionFileFromResults(tc, c, assertionFileName, initialResults, nil)
 		if err != nil {
 			t.Fatalf("Failed to generate assertion file: %s", err)
 		}
@@ -142,7 +147,7 @@ func TestPlatformCompliance(t *testing.T) {
 		t.Fatalf("Failed to save final platform scan results.")
 	}
 
-	mismatchedAssertions, err = helpers.VerifyPlatformScanResults(tc, c, finalResults, afterRemediation)
+	mismatchedAssertions, err = helpers.VerifyPlatformScanResults(tc, c, assertionFile, finalResults, afterRemediation)
 	if err != nil {
 		t.Fatalf("Failed to verify platform scan results: %s", err)
 	}
@@ -159,7 +164,7 @@ func TestPlatformCompliance(t *testing.T) {
 		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
-	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, finalResults)
+	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFileName, initialResults, finalResults)
 	if err != nil {
 		t.Fatalf("Failed to generate assertion file: %s", err)
 	}
@@ -204,8 +209,10 @@ func TestNodeCompliance(t *testing.T) {
 	}
 
 	afterRemediation := false
+	assertionFileName := fmt.Sprintf("%s-%s-%s.yml", tc.Platform, tc.Version, "node")
+	assertionFile := path.Join(tc.ContentDir, assertionsPath, assertionFileName)
 
-	mismatchedAssertions, err := helpers.VerifyNodeScanResults(tc, c, initialResults, afterRemediation)
+	mismatchedAssertions, err := helpers.VerifyNodeScanResults(tc, c, assertionFile, initialResults, afterRemediation)
 	if err != nil {
 		t.Fatalf("Failed to verify node scan results: %s", err)
 	}
@@ -218,11 +225,10 @@ func TestNodeCompliance(t *testing.T) {
 		}
 	}
 
-	assertionFile := fmt.Sprintf("%s-%s-%s.yaml", tc.Platform, tc.Version, "node")
 	// Exit early if bypassing remediations
 	if tc.BypassRemediations {
 		t.Log("Bypassing remediation application and rescan")
-		err := helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, nil)
+		err := helpers.GenerateAssertionFileFromResults(tc, c, assertionFileName, initialResults, nil)
 		if err != nil {
 			t.Fatalf("Failed to generate assertion file: %s", err)
 		}
@@ -254,7 +260,7 @@ func TestNodeCompliance(t *testing.T) {
 		t.Fatalf("Failed to save final node scan results.")
 	}
 
-	mismatchedAssertions, err = helpers.VerifyNodeScanResults(tc, c, finalResults, afterRemediation)
+	mismatchedAssertions, err = helpers.VerifyNodeScanResults(tc, c, assertionFile, finalResults, afterRemediation)
 	if err != nil {
 		t.Fatalf("Failed to verify node scan results: %s", err)
 	}
@@ -271,7 +277,7 @@ func TestNodeCompliance(t *testing.T) {
 		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
-	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, finalResults)
+	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFileName, initialResults, finalResults)
 	if err != nil {
 		t.Fatalf("Failed to generate assertion file: %s", err)
 	}
@@ -320,8 +326,10 @@ func TestProfile(t *testing.T) {
 	}
 
 	afterRemediation := false
+	assertionFileName := fmt.Sprintf("%s-%s.yml", profileFQN, tc.Version)
+	assertionFile := path.Join(tc.ContentDir, assertionsPath, assertionFileName)
 	// Verify scan results
-	mismatchedAssertions, err := helpers.VerifyScanResults(tc, c, profileFQN, initialResults, afterRemediation)
+	mismatchedAssertions, err := helpers.VerifyScanResults(tc, c, assertionFile, initialResults, afterRemediation)
 	if err != nil {
 		t.Fatalf("Failed to verify scan results for profile %s: %s", profileFQN, err)
 	}
@@ -339,8 +347,7 @@ func TestProfile(t *testing.T) {
 		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
-	assertionFile := fmt.Sprintf("%s-%s.yaml", profileFQN, tc.Version)
-	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, nil)
+	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFileName, initialResults, nil)
 	if err != nil {
 		t.Fatalf("Failed to generate assertion file: %s", err)
 	}
@@ -405,8 +412,10 @@ func TestProfileRemediations(t *testing.T) {
 	}
 
 	afterRemediation := false
+	assertionFileName := fmt.Sprintf("%s-%s.yml", profileFQN, tc.Version)
+	assertionFile := path.Join(tc.ContentDir, assertionsPath, assertionFileName)
 	// Verify scan results
-	mismatchedAssertions, err := helpers.VerifyScanResults(tc, c, profileFQN, initialResults, afterRemediation)
+	mismatchedAssertions, err := helpers.VerifyScanResults(tc, c, assertionFile, initialResults, afterRemediation)
 	if err != nil {
 		t.Fatalf("Failed to verify scan results for profile %s: %s", profileFQN, err)
 	}
@@ -446,7 +455,7 @@ func TestProfileRemediations(t *testing.T) {
 	}
 
 	// Verify results after remediation
-	mismatchedAssertions, err = helpers.VerifyScanResults(tc, c, profileFQN, finalResults, afterRemediation)
+	mismatchedAssertions, err = helpers.VerifyScanResults(tc, c, assertionFile, finalResults, afterRemediation)
 	if err != nil {
 		t.Fatalf("Failed to verify scan results for profile %s: %s", profileFQN, err)
 	}
@@ -463,8 +472,7 @@ func TestProfileRemediations(t *testing.T) {
 		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
-	assertionFile := fmt.Sprintf("%s-%s.yaml", profileFQN, tc.Version)
-	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, finalResults)
+	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFileName, initialResults, finalResults)
 	if err != nil {
 		t.Fatalf("Failed to generate assertion file: %s", err)
 	}
