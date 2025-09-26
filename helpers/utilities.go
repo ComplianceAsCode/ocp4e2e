@@ -1053,7 +1053,8 @@ func applyRemediation(tc *testConfig.TestConfig, remediationPath string, timeout
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == goctx.DeadlineExceeded {
-			return fmt.Errorf("timed out waiting for manual remediation %s to apply", remediationPath)
+			return fmt.Errorf("timed out waiting for manual remediation %s to apply: \nOutput: %s",
+				remediationPath, string(output))
 		}
 		return fmt.Errorf("failed to apply manual remediation %s: %w\nOutput: %s",
 			remediationPath, err, string(output))
