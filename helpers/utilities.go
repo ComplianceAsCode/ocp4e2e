@@ -1006,11 +1006,16 @@ func ApplyManualRemediations(tc *testConfig.TestConfig, c dynclient.Client, resu
 			return err
 		}
 
+		// Convert rule name to regex pattern that matches both - and _
+		// characters. We need to do this because - and _ are not used
+		// consistently in the CaC/content project for rule names.
+		rulePattern := convertRuleNameToRegex(ruleName)
+
 		// Determine if rule contains a manual remediation in
 		// ComplianceAsCode/content -- if we don't find one,
 		// just move on to the next result since not all rules
 		// are guaranteed to have a remediation
-		remediationPath, found := findManualRemediation(tc, ruleName)
+		remediationPath, found := findManualRemediation(tc, rulePattern)
 		if !found {
 			continue
 		}
@@ -1076,18 +1081,31 @@ func getRuleNameFromResultName(
 		return "", fmt.Errorf("failed to derive rule name from result %s", ruleName)
 	}
 
-	// Replace - with _ so we can find the directory name in ComplianceAsCode/content
-	ruleName = strings.ReplaceAll(ruleName, "-", "_")
 	return ruleName, nil
 }
 
-func findRulePath(tc *testConfig.TestConfig, ruleName string) (rulePath string, found bool) {
+func convertRuleNameToRegex(ruleName string) string {
+	// Escape any special regex characters in the rule name
+	escaped := regexp.QuoteMeta(ruleName)
+	// Replace literal \- and \_ with a character class that matches both - and _
+	pattern := strings.ReplaceAll(escaped, `\-`, `[-_]`)
+	pattern = strings.ReplaceAll(pattern, `\_`, `[-_]`)
+	return pattern
+}
+
+func findRulePath(tc *testConfig.TestConfig, rulePattern string) (rulePath string, found bool) {
 	found = false
-	err := filepath.WalkDir(tc.ContentDir, func(path string, d os.DirEntry, err error) error {
+	ruleRegex, err := regexp.Compile("^" + rulePattern + "$")
+	if err != nil {
+		log.Printf("Error compiling regex pattern %s: %s", rulePattern, err)
+		return "", false
+	}
+
+	err = filepath.WalkDir(tc.ContentDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() && d.Name() == ruleName {
+		if d.IsDir() && ruleRegex.MatchString(d.Name()) {
 			rulePath = path
 			found = true
 			return filepath.SkipAll
@@ -1100,8 +1118,8 @@ func findRulePath(tc *testConfig.TestConfig, ruleName string) (rulePath string, 
 	return rulePath, found
 }
 
-func findManualRemediation(tc *testConfig.TestConfig, ruleName string) (remediationPath string, found bool) {
-	rulePath, found := findRulePath(tc, ruleName)
+func findManualRemediation(tc *testConfig.TestConfig, rulePattern string) (remediationPath string, found bool) {
+	rulePath, found := findRulePath(tc, rulePattern)
 	if !found {
 		return "", found
 	}
@@ -1773,7 +1791,9 @@ func GenerateMismatchReport(
 
 		ruleName, err := getRuleNameFromResultName(tc, c, mismatch.CheckResultName)
 		if err == nil {
-			rulePath, found := findRulePath(tc, ruleName)
+			// Convert rule name to regex pattern that matches both - and _ characters
+			rulePattern := convertRuleNameToRegex(ruleName)
+			rulePath, found := findRulePath(tc, rulePattern)
 			if found {
 				relativePath := path.Join(strings.TrimPrefix(rulePath, tc.ContentDir+"/"), "rule.yml")
 				link := fmt.Sprintf(upstreamRepo, relativePath)
