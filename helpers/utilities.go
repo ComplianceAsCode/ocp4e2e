@@ -898,12 +898,6 @@ func verifyResultsAgainstAssertions(
 
 	// Verify each expected assertion
 	for ruleName, expected := range assertions.RuleResults {
-		actual, exists := results[ruleName]
-		if !exists {
-			log.Printf("Expected rule result for %s not found in scan results", ruleName)
-			continue
-		}
-
 		expectedResult, ok := expected.DefaultResult.(string)
 		if !ok {
 			return nil, fmt.Errorf("expected string, got %T", expected.DefaultResult)
@@ -914,6 +908,21 @@ func verifyResultsAgainstAssertions(
 				return nil, fmt.Errorf("expected string, got %T", expected.ResultAfterRemediation)
 			}
 		}
+
+		actual, exists := results[ruleName]
+		if !exists {
+			log.Printf("Expected rule %s to be found in scan results", ruleName)
+			e := fmt.Sprintf("E2E-FAILURE: Expected to find rule %s in scan results with %s state",
+				ruleName, expectedResult)
+			mismatches = append(mismatches, AssertionMismatch{
+				CheckResultName: ruleName,
+				ExpectedResult:  expectedResult,
+				ActualResult:    actual,
+				ErrorMessage:    e,
+			})
+			continue
+		}
+
 		err := verifyRuleResult(ruleName, expectedResult, actual)
 		if err != nil {
 			log.Printf("Rule %s failed result verification: %s", ruleName, err)
