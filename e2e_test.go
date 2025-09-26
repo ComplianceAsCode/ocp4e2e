@@ -106,7 +106,7 @@ func TestPlatformCompliance(t *testing.T) {
 		}
 	}
 
-	assertionFile := fmt.Sprintf("%s-%s-%s-rule-assertions.yaml", tc.Platform, tc.Version, "platform")
+	assertionFile := fmt.Sprintf("%s-%s-%s.yaml", tc.Platform, tc.Version, "platform")
 	// Exit early if bypassing remediations
 	if tc.BypassRemediations {
 		t.Log("Bypassing remediation application and rescan")
@@ -218,7 +218,7 @@ func TestNodeCompliance(t *testing.T) {
 		}
 	}
 
-	assertionFile := fmt.Sprintf("%s-%s-%s-rule-assertions.yaml", tc.Platform, tc.Version, "node")
+	assertionFile := fmt.Sprintf("%s-%s-%s.yaml", tc.Platform, tc.Version, "node")
 	// Exit early if bypassing remediations
 	if tc.BypassRemediations {
 		t.Log("Bypassing remediation application and rescan")
@@ -339,7 +339,7 @@ func TestProfile(t *testing.T) {
 		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
-	assertionFile := fmt.Sprintf("%s-%s-rule-assertions.yaml", profileFQN, tc.Version)
+	assertionFile := fmt.Sprintf("%s-%s.yaml", profileFQN, tc.Version)
 	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, nil)
 	if err != nil {
 		t.Fatalf("Failed to generate assertion file: %s", err)
@@ -463,7 +463,7 @@ func TestProfileRemediations(t *testing.T) {
 		t.Fatal("Actual cluster compliance state didn't match expected state")
 	}
 
-	assertionFile := fmt.Sprintf("%s-%s-rule-assertions.yaml", profileFQN, tc.Version)
+	assertionFile := fmt.Sprintf("%s-%s.yaml", profileFQN, tc.Version)
 	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFile, initialResults, finalResults)
 	if err != nil {
 		t.Fatalf("Failed to generate assertion file: %s", err)
