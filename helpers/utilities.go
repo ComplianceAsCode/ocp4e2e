@@ -822,9 +822,9 @@ func assertScanResults(
 	afterRemediation bool,
 ) ([]AssertionMismatch, error) {
 	var assertionFile string
-	if tc.Profile != "" {
+	if tc.Profile != "" && tc.Product != "" {
 		assertionFile = path.Join(tc.ContentDir, assertionsPath,
-			fmt.Sprintf("%s-%s.yaml", tc.Profile, tc.Version))
+			fmt.Sprintf("%s-%s-%s.yaml", tc.Product, tc.Profile, tc.Version))
 	} else {
 		// For scan assertions, we use the simple file naming convention
 		assertionFile = path.Join(tc.ContentDir, assertionsPath,
