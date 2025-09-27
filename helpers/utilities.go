@@ -244,10 +244,40 @@ func waitForOperatorToBeReady(c dynclient.Client, tc *testConfig.TestConfig) err
 }
 
 func ensureTestProfileBundles(c dynclient.Client, tc *testConfig.TestConfig) error {
-	log.Printf("Using content image for testing: %s", tc.ContentImage)
+	// Only delete and recreate profile bundles if using a non-default
+	// content image, like ones built in CI or from a development
+	// environment.
+	if tc.ContentImage == testConfig.DefaultContentImage {
+		log.Printf("Using default content image: %s", testConfig.DefaultContentImage)
+		return nil
+	}
+
+	log.Printf("Using content image: %s", tc.ContentImage)
+	defaultBundles := []string{"ocp4", "rhcos4"}
+	for _, bundleName := range defaultBundles {
+		key := types.NamespacedName{
+			Name:      bundleName,
+			Namespace: tc.OperatorNamespace.Namespace,
+		}
+		defaultPB := &cmpv1alpha1.ProfileBundle{}
+		err := c.Get(goctx.TODO(), key, defaultPB)
+		if err == nil {
+			log.Printf("Deleting default profile bundle: %s", bundleName)
+			err = c.Delete(goctx.TODO(), defaultPB)
+			if err != nil {
+				return fmt.Errorf("failed to delete default profile bundle %s: %w", bundleName, err)
+			}
+			log.Printf("Deleted default profile bundle: %s", bundleName)
+		} else if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to check default profile bundle %s: %w", bundleName, err)
+		}
+	}
+
+	// Create profile bundles using the provided ContentImage but reusing
+	// the default profile bundle names.
 	bundles := map[string]string{
-		tc.OpenShiftBundleName: "ocp4",
-		tc.RHCOSBundleName:     "rhcos4",
+		"ocp4":   "ocp4",
+		"rhcos4": "rhcos4",
 	}
 
 	for bundleName, product := range bundles {
@@ -284,13 +314,13 @@ func ensureTestProfileBundles(c dynclient.Client, tc *testConfig.TestConfig) err
 		if err != nil {
 			return fmt.Errorf("failed to ensure test profile bundle %s exists: %w", bundleName, err)
 		}
-		log.Printf("ProfileBundle %s created/updated successfully", bundleName)
+		log.Printf("ProfileBundle %s created successfully", bundleName)
 	}
 	return nil
 }
 
 func waitForValidTestProfileBundles(c dynclient.Client, tc *testConfig.TestConfig) error {
-	bundleNames := []string{tc.OpenShiftBundleName, tc.RHCOSBundleName}
+	bundleNames := []string{"ocp4", "rhcos4"}
 
 	for _, bundleName := range bundleNames {
 		key := types.NamespacedName{
@@ -479,12 +509,12 @@ func CreatePlatformTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client
 // tailored profiles because a profile cannot have rules from multiple
 // products.
 func CreateNodeTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client) error {
-	ocpNodeRules, err := findNodeRulesByBundle(c, tc.OpenShiftBundleName)
+	ocpNodeRules, err := findNodeRulesByBundle(c, "ocp4")
 	if err != nil {
 		return fmt.Errorf("failed to find OpenShift node rules: %w", err)
 	}
 
-	rhcosNodeRules, err := findNodeRulesByBundle(c, tc.RHCOSBundleName)
+	rhcosNodeRules, err := findNodeRulesByBundle(c, "rhcos4")
 	if err != nil {
 		return fmt.Errorf("failed to find RHCOS node rules: %w", err)
 	}
@@ -519,7 +549,7 @@ func findPlatformRules(c dynclient.Client, tc *testConfig.TestConfig) ([]cmpv1al
 	for i := range ruleList.Items {
 		// Only include rules from the e2e profile bundle
 		bundleName, exists := ruleList.Items[i].Labels["compliance.openshift.io/profile-bundle"]
-		if exists && bundleName == tc.OpenShiftBundleName {
+		if exists && bundleName == "ocp4" {
 			if ruleList.Items[i].CheckType == cmpv1alpha1.CheckTypePlatform {
 				platformRules = append(platformRules, ruleList.Items[i])
 			}

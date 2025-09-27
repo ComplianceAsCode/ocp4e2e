@@ -12,14 +12,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+const DefaultContentImage = "quay.io/redhat-user-workloads/ocp-isc-tenant/compliance-operator-content-dev:master"
+
 // TestConfig holds all the configuration arguments for the test suite
 // that can be passed between helper and test packages.
 type TestConfig struct {
 	APIPollInterval          time.Duration
 	E2eSettings              string
-	TestProfileBundleName    string
-	OpenShiftBundleName      string
-	RHCOSBundleName          string
 	Profile                  string
 	Product                  string
 	Platform                 string
@@ -64,9 +63,6 @@ func NewTestConfig() *TestConfig {
 	return &TestConfig{
 		APIPollInterval:          5 * time.Second,
 		E2eSettings:              "e2e-debug",
-		TestProfileBundleName:    "e2e",
-		OpenShiftBundleName:      "e2e-ocp4",
-		RHCOSBundleName:          "e2e-rhcos4",
 		Profile:                  profile,
 		Product:                  product,
 		Platform:                 platform,
@@ -87,8 +83,7 @@ func DefineFlags() {
 	flag.StringVar(&profile, "profile", "", "The profile to check")
 	flag.StringVar(&product, "product", "", "The product this profile is for - e.g. 'rhcos4', 'ocp4'")
 	flag.StringVar(&platform, "platform", "ocp4", "The platform that the tests are running on - e.g. 'ocp4', 'rosa'")
-	flag.StringVar(&contentImage, "content-image",
-		"quay.io/redhat-user-workloads/ocp-isc-tenant/compliance-operator-content-dev:master",
+	flag.StringVar(&contentImage, "content-image", DefaultContentImage,
 		"The path to the image with the content to test")
 	flag.StringVar(&contentDir, "content-directory", "", "The path to the compliance content directory")
 	flag.StringVar(&logDir, "log-dir", "/logs/artifacts", "The directory where log files and artifacts will be written")
