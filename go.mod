@@ -1,6 +1,8 @@
 module github.com/ComplianceAsCode/ocp4e2e
 
-go 1.23
+go 1.23.0
+
+toolchain go1.23.10
 
 require (
 	github.com/ComplianceAsCode/compliance-operator v1.7.0
@@ -11,7 +13,7 @@ require (
 	k8s.io/apiextensions-apiserver v0.32.1
 	k8s.io/apimachinery v0.32.3
 	k8s.io/client-go v12.0.0+incompatible
-	sigs.k8s.io/controller-runtime v0.20.2
+	sigs.k8s.io/controller-runtime v0.20.4
 )
 
 require (
@@ -19,6 +21,7 @@ require (
 	github.com/emicklei/go-restful/v3 v3.12.1 // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
+	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
 	github.com/go-openapi/jsonreference v0.21.0 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
@@ -37,6 +40,8 @@ require (
 	github.com/onsi/ginkgo/v2 v2.22.1 // indirect
 	github.com/openshift/api v0.0.0-20250320115527-3aa9dd5b9002 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
+	go.uber.org/multierr v1.11.0 // indirect
+	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/net v0.37.0 // indirect
 	golang.org/x/oauth2 v0.28.0 // indirect
 	golang.org/x/sys v0.31.0 // indirect
