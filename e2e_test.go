@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	ctrlLog "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
 	"github.com/ComplianceAsCode/ocp4e2e/config"
 	"github.com/ComplianceAsCode/ocp4e2e/helpers"
 )
@@ -20,6 +23,11 @@ var (
 
 // TestMain handles the setup and teardown for all tests.
 func TestMain(m *testing.M) {
+	// Setup the controller-runtime logger, which is used in clients across
+	// various tests. Do this here instead of in each test.
+	logger := zap.New(zap.UseDevMode(true))
+	ctrlLog.SetLogger(logger)
+
 	// Define flags
 	config.DefineFlags()
 
