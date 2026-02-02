@@ -1762,6 +1762,44 @@ func CreateResultMap(_ *testConfig.TestConfig, c dynclient.Client, suiteName str
 	return resultMap, nil
 }
 
+// CheckAutomatedRemediationPassed verifies that all ComplianceCheckResults with automated remediation
+// are in PASS status. If any automated remediation results are not PASS, it returns an error.
+func CheckAutomatedRemediationPassed(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
+	labelSelectorStr := fmt.Sprintf("%s,%s!=PASS,%s=%s",
+		cmpv1alpha1.ComplianceCheckResultHasRemediation,
+		cmpv1alpha1.ComplianceCheckResultStatusLabel,
+		cmpv1alpha1.SuiteLabel,
+		suiteName,
+	)
+	labelSelector, err := labels.Parse(labelSelectorStr)
+	if err != nil {
+		return fmt.Errorf("failed to parse label selector: %w", err)
+	}
+
+	resultList := &cmpv1alpha1.ComplianceCheckResultList{}
+	opts := &dynclient.ListOptions{
+		LabelSelector: labelSelector,
+		Namespace:     tc.OperatorNamespace.Namespace,
+	}
+	err = c.List(goctx.TODO(), resultList, opts)
+	if err != nil {
+		return fmt.Errorf("failed to get compliance check results for suite %s: %w", suiteName, err)
+	}
+
+	if len(resultList.Items) > 0 {
+		var nonPassResults []string
+		for i := range resultList.Items {
+			result := &resultList.Items[i]
+			nonPassResults = append(nonPassResults, fmt.Sprintf("%s (status: %s)", result.Name, result.Status))
+		}
+		return fmt.Errorf("found %d ComplianceCheckResult(s) with automated remediation that are not in PASS status for suite %s: %v",
+			len(resultList.Items), suiteName, nonPassResults)
+	}
+
+	log.Printf("All ComplianceCheckResults with automated remediation are in PASS status for suite %s", suiteName)
+	return nil
+}
+
 // SaveResultAsYAML saves YAML data about the scan results to a file in the configured log directory.
 func SaveResultAsYAML(tc *testConfig.TestConfig, results map[string]string, filename string) error {
 	p := path.Join(tc.LogDir, filename)
