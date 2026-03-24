@@ -579,9 +579,9 @@ func TestNamespaceExemptionVariables(t *testing.T) {
 
 	// Verify that resource limit rules PASS because namespaces are exempted
 	expectedRules := map[string]string{
-		"ocp4-resource-requests-limits-in-daemonset":   "PASS",
-		"ocp4-resource-requests-limits-in-deployment":  "PASS",
-		"ocp4-resource-requests-limits-in-statefulset": "PASS",
+		"resource-requests-limits-in-daemonset":   "PASS",
+		"resource-requests-limits-in-deployment":  "PASS",
+		"resource-requests-limits-in-statefulset": "PASS",
 	}
 
 	var failures []string
