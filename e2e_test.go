@@ -597,7 +597,7 @@ func TestNamespaceExemptionVariables(t *testing.T) {
 			failures = append(failures,
 				fmt.Sprintf("Rule %s: expected %s, got %s", ruleName, expectedResult, actualResult))
 		} else {
-			t.Logf("✓ Rule %s: %s (namespace exemption working correctly)", ruleName, actualResult)
+			t.Logf("Rule %s: %s (namespace exemption working correctly)", ruleName, actualResult)
 		}
 	}
 
