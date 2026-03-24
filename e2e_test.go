@@ -499,7 +499,7 @@ func TestProfileRemediations(t *testing.T) {
 }
 
 // TestNamespaceExemptionVariables tests the namespace exemption logic for
-// resource limit checks (test case 76797). This test validates that:
+// resource limit checks. This test validates that:
 // 1. Workloads without resource limits in exempted namespaces pass the check
 // 2. The exemption variables work correctly for DaemonSet, Deployment, and StatefulSet
 func TestNamespaceExemptionVariables(t *testing.T) {
