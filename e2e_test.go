@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"strings"
 	"testing"
 	"time"
 
@@ -612,4 +613,224 @@ func TestNamespaceExemptionVariables(t *testing.T) {
 	}
 
 	t.Log("Namespace exemption test passed successfully - all exempted workloads passed the resource limit checks")
+}
+
+// TestKubeletConfigAutoRemediation tests that auto-remediation properly updates
+// an existing KubeletConfig object with insecure tlsCipherSuites configuration.
+// This test validates:
+// 1. A KubeletConfig with insecure cipher suites is created and applied to nodes
+// 2. Auto-remediation updates the KubeletConfig with secure cipher suites
+// 3. The kubelet-configure-tls-cipher-suites rule passes after remediation
+func TestKubeletConfigAutoRemediation(t *testing.T) {
+	// Skip if test type doesn't include node tests
+	if tc.TestType != "node" && tc.TestType != "all" {
+		t.Skipf("Skipping KubeletConfig auto-remediation test: -test-type is %s", tc.TestType)
+	}
+
+	c, err := helpers.GenerateKubeConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate kube config: %s", err)
+	}
+
+	// Test configuration
+	kubeletConfigName := "test-kubelet-tls-cipher"
+	machineConfigPoolName := "worker"
+	bindingName := "kubeletconfig-autorem-test"
+
+	// Expected cipher suite value after remediation
+	expectedCipher := "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+
+	// Cleanup function to remove test resources
+	defer func() {
+		t.Log("Cleaning up test resources")
+
+		// Delete scan binding
+		err := helpers.DeleteScanBinding(tc, c, bindingName)
+		if err != nil {
+			t.Logf("Warning: Failed to delete scan binding: %s", err)
+		}
+
+		// Wait for scan cleanup
+		err = helpers.WaitForScanCleanup(tc, c, bindingName)
+		if err != nil {
+			t.Logf("Warning: Failed to wait for scan cleanup: %s", err)
+		}
+
+		// Delete KubeletConfig
+		deleteKubeletConfig(c, kubeletConfigName)
+
+		// Wait for MachineConfigPool to stabilize
+		time.Sleep(30 * time.Second)
+		err = helpers.WaitForMachineConfigPoolsUpdated(tc, c)
+		if err != nil {
+			t.Logf("Warning: Failed to wait for MachineConfigPools after cleanup: %s", err)
+		}
+	}()
+
+	// Step 1: Create a KubeletConfig with insecure tlsCipherSuites
+	t.Logf("Creating KubeletConfig '%s' with insecure tlsCipherSuites", kubeletConfigName)
+	err = createKubeletConfigWithEmptyCiphers(c, kubeletConfigName, machineConfigPoolName)
+	if err != nil {
+		t.Fatalf("Failed to create KubeletConfig: %s", err)
+	}
+
+	// Wait for KubeletConfig to be applied
+	time.Sleep(10 * time.Second)
+
+	// Verify initial KubeletConfig state (insecure ciphers)
+	initialCiphers, err := getKubeletConfigCiphers(c, kubeletConfigName)
+	if err != nil {
+		t.Fatalf("Failed to get initial KubeletConfig ciphers: %s", err)
+	}
+
+	if len(initialCiphers) == 0 {
+		t.Fatal("Expected insecure tlsCipherSuites but found empty list")
+	} else {
+		t.Logf("Verified: KubeletConfig has insecure tlsCipherSuites initially: %v", initialCiphers)
+	}
+
+	// Wait for MachineConfigPool to apply the insecure KubeletConfig to nodes
+	t.Log("Waiting for MachineConfigPool to apply insecure KubeletConfig to nodes (this may take 10-20 minutes)")
+	err = helpers.WaitForMachineConfigPoolsUpdated(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to wait for MachineConfigPools to apply KubeletConfig: %s", err)
+	}
+	t.Log("MachineConfigPool updated - nodes now have insecure tlsCipherSuites, scan should detect FAIL")
+
+	// Step 2: Create a tailored profile with CIS rules and auto-apply enabled
+	t.Log("Creating tailored profile for CIS with kubelet TLS cipher rules")
+	tailoredProfileName := "cis-kubelet-autorem-test"
+	err = createCISKubeletTailoredProfile(tc, c, tailoredProfileName)
+	if err != nil {
+		t.Fatalf("Failed to create tailored profile: %s", err)
+	}
+
+	// Step 3: Create scan binding with auto-apply remediations
+	t.Log("Creating scan binding with auto-apply remediations enabled")
+	err = helpers.CreateScanBinding(c, tc, bindingName, tailoredProfileName, "TailoredProfile", tc.E2eSettings)
+	if err != nil {
+		t.Fatalf("Failed to create scan binding: %s", err)
+	}
+
+	// Step 4: Wait for compliance suite to complete
+	t.Log("Waiting for compliance suite to complete first scan")
+	err = helpers.WaitForComplianceSuite(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for compliance suite: %s", err)
+	}
+
+	// Get initial scan results
+	initialResults, err := helpers.CreateResultMap(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to create initial result map: %s", err)
+	}
+
+	// Step 5: Wait for auto-remediations to be applied
+	t.Log("Waiting for auto-remediations to be applied")
+	time.Sleep(30 * time.Second)
+
+	err = helpers.WaitForRemediationsToBeApplied(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed waiting for remediations to be applied: %s", err)
+	}
+
+	// Step 6: Wait for MachineConfigPool to update after remediation
+	t.Log("Waiting for MachineConfigPool to update after remediation")
+	err = helpers.WaitForMachineConfigPoolsUpdated(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to wait for MachineConfigPools: %s", err)
+	}
+
+	// Step 7: Verify KubeletConfig was updated with correct ciphers
+	t.Log("Verifying KubeletConfig was updated with correct TLS cipher suites")
+	updatedCiphers, err := getKubeletConfigCiphers(c, kubeletConfigName)
+	if err != nil {
+		t.Fatalf("Failed to get updated KubeletConfig ciphers: %s", err)
+	}
+
+	if len(updatedCiphers) == 0 {
+		t.Fatal("KubeletConfig tlsCipherSuites is still empty after auto-remediation")
+	}
+
+	// Check that insecure ciphers were replaced
+	hasInsecureCipher := false
+	for _, cipher := range updatedCiphers {
+		if cipher == "TLS_RSA_WITH_AES_128_CBC_SHA" || cipher == "TLS_RSA_WITH_AES_256_CBC_SHA" {
+			hasInsecureCipher = true
+			break
+		}
+	}
+	if hasInsecureCipher {
+		t.Fatalf("KubeletConfig still contains insecure ciphers after remediation: %v", updatedCiphers)
+	}
+
+	// Check if expected cipher is present
+	cipherFound := false
+	for _, cipher := range updatedCiphers {
+		if cipher == expectedCipher {
+			cipherFound = true
+			break
+		}
+	}
+
+	if !cipherFound {
+		t.Fatalf("Expected cipher '%s' not found in KubeletConfig. Found: %v", expectedCipher, updatedCiphers)
+	}
+	t.Logf("SUCCESS: KubeletConfig updated with correct ciphers: %v", updatedCiphers)
+
+	// Step 8: Trigger rescan to verify rules pass
+	t.Log("Triggering rescan to verify rules pass after remediation")
+	err = helpers.RescanComplianceSuite(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to trigger rescan: %s", err)
+	}
+
+	err = helpers.WaitForComplianceSuite(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for rescan: %s", err)
+	}
+
+	// Step 9: Verify final scan results
+	finalResults, err := helpers.CreateResultMap(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to create final result map: %s", err)
+	}
+
+	// Save results for debugging
+	err = helpers.SaveResultAsYAML(tc, initialResults, "kubeletconfig-autorem-initial-results.yaml")
+	if err != nil {
+		t.Logf("Warning: Failed to save initial results: %s", err)
+	}
+
+	err = helpers.SaveResultAsYAML(tc, finalResults, "kubeletconfig-autorem-final-results.yaml")
+	if err != nil {
+		t.Logf("Warning: Failed to save final results: %s", err)
+	}
+
+	// Verify critical rules pass
+	criticalRules := map[string]string{
+		"kubelet-configure-tls-cipher-suites": "PASS",
+	}
+
+	var failures []string
+	for ruleName, expectedResult := range criticalRules {
+		actualResult := findRuleResult(finalResults, ruleName)
+		if actualResult == "" {
+			failures = append(failures, fmt.Sprintf("Rule %s not found in scan results", ruleName))
+			continue
+		}
+
+		if actualResult != expectedResult {
+			failures = append(failures,
+				fmt.Sprintf("Rule %s: expected %s, got %s", ruleName, expectedResult, actualResult))
+		} else {
+			t.Logf("✓ Rule %s: %s", ruleName, actualResult)
+		}
+	}
+
+	if len(failures) > 0 {
+		t.Fatalf("KubeletConfig auto-remediation test failed:\n%s", strings.Join(failures, "\n"))
+	}
+
+	t.Log("✓ KubeletConfig auto-remediation test passed successfully")
 }
