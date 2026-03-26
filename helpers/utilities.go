@@ -23,12 +23,14 @@ import (
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	extscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
@@ -1760,6 +1762,341 @@ func CreateResultMap(_ *testConfig.TestConfig, c dynclient.Client, suiteName str
 
 	log.Printf("Created result map with %d rules for suite %s", len(resultMap), suiteName)
 	return resultMap, nil
+}
+
+// ValidateMachineSetScaleWithDeletePolicyNewest validates that a worker MachineSet
+// can scale up and back down after remediations and that deletePolicy=Newest
+// removes the newest machine first on scale-down.
+func ValidateMachineSetScaleWithDeletePolicyNewest(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
+	const keepLabelKey = "ocp4e2e.openshift.io/scan-suite"
+	const keepLabelValue = "kept-after-scan"
+
+	msName, msKey, err := getMachineSetForOneWorkerNode(c)
+	if err != nil {
+		return err
+	}
+
+	msObj, originalReadyReplicas, originalDeletePolicy, hadDeletePolicy, err := getMachineSetState(c, msKey)
+	if err != nil {
+		return fmt.Errorf("failed to get initial machineset state for %s: %w", msName, err)
+	}
+
+	initialMachineNames, err := labelExistingMachinesForMachineSet(c, msName, keepLabelKey, keepLabelValue, suiteName)
+	if err != nil {
+		return err
+	}
+
+	defer cleanupMachineSetScaleDeletePolicyAndLabels(
+		tc,
+		c,
+		msKey,
+		msName,
+		originalReadyReplicas,
+		originalDeletePolicy,
+		hadDeletePolicy,
+		keepLabelKey,
+		initialMachineNames,
+	)
+
+	if err := setMachineSetDeletePolicyNewest(c, msKey, msObj, msName); err != nil {
+		return err
+	}
+	if err := verifyMachineSetDeletePolicyNewest(c, msKey, msName); err != nil {
+		return err
+	}
+
+	targetReplicas := originalReadyReplicas + 1
+	if err := scaleMachineSetAndWait(tc, c, msKey, targetReplicas, msName, "up"); err != nil {
+		return err
+	}
+	if err := scaleMachineSetAndWait(tc, c, msKey, originalReadyReplicas, msName, "down"); err != nil {
+		return err
+	}
+
+	if err := verifyOriginalMachinesPreserved(c, msName, initialMachineNames); err != nil {
+		return err
+	}
+
+	log.Printf("Validated machineset scale behavior for %s with deletePolicy=Newest (suite=%s)", msName, suiteName)
+	return nil
+}
+
+func getMachineSetForOneWorkerNode(c dynclient.Client) (string, types.NamespacedName, error) {
+	const machineAPINamespace = "openshift-machine-api"
+
+	nodeSelector, err := labels.Parse("node-role.kubernetes.io/edge!=,kubernetes.io/os!=windows,node-role.kubernetes.io/worker=")
+	if err != nil {
+		return "", types.NamespacedName{}, fmt.Errorf("failed to parse worker node selector: %w", err)
+	}
+
+	nodes := &corev1.NodeList{}
+	if err := c.List(goctx.TODO(), nodes, &dynclient.ListOptions{LabelSelector: nodeSelector}); err != nil {
+		return "", types.NamespacedName{}, fmt.Errorf("failed to list worker nodes: %w", err)
+	}
+	if len(nodes.Items) == 0 {
+		return "", types.NamespacedName{}, fmt.Errorf("no worker node found for machineset scale validation")
+	}
+	workerNode := &nodes.Items[0]
+
+	machineRef, ok := workerNode.Annotations["machine.openshift.io/machine"]
+	if !ok || machineRef == "" {
+		return "", types.NamespacedName{}, fmt.Errorf("worker node %s does not have machine annotation", workerNode.Name)
+	}
+	parts := strings.SplitN(machineRef, "/", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return "", types.NamespacedName{}, fmt.Errorf("worker node %s has invalid machine annotation: %s", workerNode.Name, machineRef)
+	}
+	machineName := parts[1]
+
+	machineGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "Machine"}
+	machineObj := &unstructured.Unstructured{}
+	machineObj.SetGroupVersionKind(machineGVK)
+	if err := c.Get(goctx.TODO(), types.NamespacedName{Name: machineName, Namespace: machineAPINamespace}, machineObj); err != nil {
+		return "", types.NamespacedName{}, fmt.Errorf("failed to get machine %s: %w", machineName, err)
+	}
+
+	msName, ok := machineObj.GetLabels()["machine.openshift.io/cluster-api-machineset"]
+	if !ok || msName == "" {
+		return "", types.NamespacedName{}, fmt.Errorf("machine %s does not have machineset label", machineName)
+	}
+	return msName, types.NamespacedName{Name: msName, Namespace: machineAPINamespace}, nil
+}
+
+func getMachineSetState(
+	c dynclient.Client,
+	msKey types.NamespacedName,
+) (*unstructured.Unstructured, int64, string, bool, error) {
+	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+	msObj := &unstructured.Unstructured{}
+	msObj.SetGroupVersionKind(msGVK)
+	if err := c.Get(goctx.TODO(), msKey, msObj); err != nil {
+		return nil, 0, "", false, err
+	}
+
+	originalDeletePolicy, hadDeletePolicy, _ := unstructured.NestedString(msObj.Object, "spec", "deletePolicy")
+	originalReadyReplicas, foundReady, _ := unstructured.NestedInt64(msObj.Object, "status", "readyReplicas")
+	if !foundReady {
+		originalReadyReplicas = 0
+	}
+	return msObj, originalReadyReplicas, originalDeletePolicy, hadDeletePolicy, nil
+}
+
+func labelExistingMachinesForMachineSet(
+	c dynclient.Client,
+	msName, keepLabelKey, keepLabelValue, suiteName string,
+) (map[string]struct{}, error) {
+	const machineAPINamespace = "openshift-machine-api"
+
+	machineSelector, err := labels.Parse("machine.openshift.io/cluster-api-machineset=" + msName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse machineset machine selector: %w", err)
+	}
+	initialMachineList := &unstructured.UnstructuredList{}
+	initialMachineList.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "machine.openshift.io",
+		Version: "v1beta1",
+		Kind:    "MachineList",
+	})
+	if err := c.List(goctx.TODO(), initialMachineList, &dynclient.ListOptions{
+		Namespace:     machineAPINamespace,
+		LabelSelector: machineSelector,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to list machines for machineset %s: %w", msName, err)
+	}
+	if len(initialMachineList.Items) == 0 {
+		return nil, fmt.Errorf("no machines found for machineset %s", msName)
+	}
+
+	initialMachineNames := make(map[string]struct{}, len(initialMachineList.Items))
+	for i := range initialMachineList.Items {
+		m := &initialMachineList.Items[i]
+		initialMachineNames[m.GetName()] = struct{}{}
+		lbls := m.GetLabels()
+		if lbls == nil {
+			lbls = map[string]string{}
+		}
+		lbls[keepLabelKey] = keepLabelValue
+		lbls[keepLabelKey+"-suite"] = suiteName
+		m.SetLabels(lbls)
+		if err := c.Update(goctx.TODO(), m); err != nil {
+			return nil, fmt.Errorf("failed to label machine %s: %w", m.GetName(), err)
+		}
+	}
+	return initialMachineNames, nil
+}
+
+func cleanupMachineSetScaleDeletePolicyAndLabels(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	msKey types.NamespacedName,
+	msName string,
+	originalReadyReplicas int64,
+	originalDeletePolicy string,
+	hadDeletePolicy bool,
+	keepLabelKey string,
+	initialMachineNames map[string]struct{},
+) {
+	const machineAPINamespace = "openshift-machine-api"
+	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+	restoreObj := &unstructured.Unstructured{}
+	restoreObj.SetGroupVersionKind(msGVK)
+	if err := c.Get(goctx.TODO(), msKey, restoreObj); err != nil {
+		log.Printf("cleanup warning: failed to get machineset %s: %v", msName, err)
+	} else if err := unstructured.SetNestedField(restoreObj.Object, originalReadyReplicas, "spec", "replicas"); err != nil {
+		log.Printf("cleanup warning: failed to set replicas on machineset %s: %v", msName, err)
+	} else if err := c.Update(goctx.TODO(), restoreObj); err != nil {
+		log.Printf("cleanup warning: failed to restore replicas for machineset %s: %v", msName, err)
+	} else if err := waitForMachineSetReadyReplicas(tc, c, msKey, originalReadyReplicas); err != nil {
+		log.Printf("cleanup warning: failed waiting for replicas restore on machineset %s: %v", msName, err)
+	}
+
+	restoreObj = &unstructured.Unstructured{}
+	restoreObj.SetGroupVersionKind(msGVK)
+	if err := c.Get(goctx.TODO(), msKey, restoreObj); err != nil {
+		log.Printf("cleanup warning: failed to re-get machineset %s: %v", msName, err)
+	} else {
+		if hadDeletePolicy {
+			if err := unstructured.SetNestedField(restoreObj.Object, originalDeletePolicy, "spec", "deletePolicy"); err != nil {
+				log.Printf("cleanup warning: failed to restore deletePolicy for machineset %s: %v", msName, err)
+			}
+		} else {
+			unstructured.RemoveNestedField(restoreObj.Object, "spec", "deletePolicy")
+		}
+		if err := c.Update(goctx.TODO(), restoreObj); err != nil {
+			log.Printf("cleanup warning: failed to restore deletePolicy for machineset %s: %v", msName, err)
+		}
+	}
+
+	for machineName := range initialMachineNames {
+		machine := &unstructured.Unstructured{}
+		machine.SetGroupVersionKind(schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "Machine"})
+		key := types.NamespacedName{Name: machineName, Namespace: machineAPINamespace}
+		if err := c.Get(goctx.TODO(), key, machine); err != nil {
+			continue
+		}
+		lbls := machine.GetLabels()
+		delete(lbls, keepLabelKey)
+		delete(lbls, keepLabelKey+"-suite")
+		machine.SetLabels(lbls)
+		if err := c.Update(goctx.TODO(), machine); err != nil {
+			log.Printf("cleanup warning: failed to remove keep labels from machine %s: %v", machineName, err)
+		}
+	}
+}
+
+func setMachineSetDeletePolicyNewest(
+	c dynclient.Client,
+	msKey types.NamespacedName,
+	msObj *unstructured.Unstructured,
+	msName string,
+) error {
+	if err := unstructured.SetNestedField(msObj.Object, "Newest", "spec", "deletePolicy"); err != nil {
+		return fmt.Errorf("failed to set deletePolicy=Newest on machineset %s: %w", msName, err)
+	}
+	if err := c.Update(goctx.TODO(), msObj); err != nil {
+		return fmt.Errorf("failed to update machineset %s with deletePolicy=Newest: %w", msName, err)
+	}
+	return nil
+}
+
+func verifyMachineSetDeletePolicyNewest(c dynclient.Client, msKey types.NamespacedName, msName string) error {
+	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+	verifyObj := &unstructured.Unstructured{}
+	verifyObj.SetGroupVersionKind(msGVK)
+	if err := c.Get(goctx.TODO(), msKey, verifyObj); err != nil {
+		return fmt.Errorf("failed to verify machineset %s: %w", msName, err)
+	}
+	deletePolicy, _, _ := unstructured.NestedString(verifyObj.Object, "spec", "deletePolicy")
+	if deletePolicy != "Newest" {
+		return fmt.Errorf("expected machineset %s deletePolicy to be Newest, got %q", msName, deletePolicy)
+	}
+	return nil
+}
+
+func scaleMachineSetAndWait(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	msKey types.NamespacedName,
+	replicas int64,
+	msName, direction string,
+) error {
+	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+	msObj := &unstructured.Unstructured{}
+	msObj.SetGroupVersionKind(msGVK)
+	if err := c.Get(goctx.TODO(), msKey, msObj); err != nil {
+		return fmt.Errorf("failed to get machineset %s before scale %s: %w", msName, direction, err)
+	}
+	if err := unstructured.SetNestedField(msObj.Object, replicas, "spec", "replicas"); err != nil {
+		return fmt.Errorf("failed to set replicas=%d for machineset %s scale %s: %w", replicas, msName, direction, err)
+	}
+	if err := c.Update(goctx.TODO(), msObj); err != nil {
+		return fmt.Errorf("failed to scale %s machineset %s: %w", direction, msName, err)
+	}
+	if err := waitForMachineSetReadyReplicas(tc, c, msKey, replicas); err != nil {
+		return fmt.Errorf("failed waiting for machineset %s scale %s: %w", msName, direction, err)
+	}
+	return nil
+}
+
+func verifyOriginalMachinesPreserved(
+	c dynclient.Client,
+	msName string,
+	initialMachineNames map[string]struct{},
+) error {
+	const machineAPINamespace = "openshift-machine-api"
+	machineSelector, err := labels.Parse("machine.openshift.io/cluster-api-machineset=" + msName)
+	if err != nil {
+		return fmt.Errorf("failed to parse machineset machine selector: %w", err)
+	}
+	finalMachineList := &unstructured.UnstructuredList{}
+	finalMachineList.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "machine.openshift.io",
+		Version: "v1beta1",
+		Kind:    "MachineList",
+	})
+	if err = c.List(goctx.TODO(), finalMachineList, &dynclient.ListOptions{
+		Namespace:     machineAPINamespace,
+		LabelSelector: machineSelector,
+	}); err != nil {
+		return fmt.Errorf("failed to list final machines for machineset %s: %w", msName, err)
+	}
+	finalMachineNames := make(map[string]struct{}, len(finalMachineList.Items))
+	for i := range finalMachineList.Items {
+		finalMachineNames[finalMachineList.Items[i].GetName()] = struct{}{}
+	}
+	for name := range initialMachineNames {
+		if _, exists := finalMachineNames[name]; !exists {
+			return fmt.Errorf("machineset %s scaled down but older machine %s was deleted; expected newest machine to be deleted", msName, name)
+		}
+	}
+	return nil
+}
+
+func waitForMachineSetReadyReplicas(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	msKey types.NamespacedName,
+	expected int64,
+) error {
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 200)
+	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+	return backoff.RetryNotify(func() error {
+		ms := &unstructured.Unstructured{}
+		ms.SetGroupVersionKind(msGVK)
+		if err := c.Get(goctx.TODO(), msKey, ms); err != nil {
+			return err
+		}
+		ready, found, _ := unstructured.NestedInt64(ms.Object, "status", "readyReplicas")
+		if !found {
+			ready = 0
+		}
+		if ready != expected {
+			return fmt.Errorf("readyReplicas=%d expected=%d", ready, expected)
+		}
+		return nil
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("waiting for machineset %s readyReplicas=%d after %s: %v", msKey.Name, expected, d.String(), err)
+	})
 }
 
 // SaveResultAsYAML saves YAML data about the scan results to a file in the configured log directory.
