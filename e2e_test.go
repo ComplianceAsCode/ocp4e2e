@@ -6,12 +6,14 @@ import (
 	"log"
 	"os"
 	"path"
+	"runtime"
 	"testing"
 	"time"
 
 	ctrlLog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	cmpv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
 	"github.com/ComplianceAsCode/ocp4e2e/config"
 	"github.com/ComplianceAsCode/ocp4e2e/helpers"
 )
@@ -176,6 +178,128 @@ func TestPlatformCompliance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to generate assertion file: %s", err)
 	}
+}
+
+// TestResourceQuotaExemptRegex ports test case 76105: setting
+// ocp4-var-resource-requests-quota-per-project-exempt-regex to all non–control-plane
+// namespaces (pipe-separated) makes the STIG and moderate quota rules PASS.
+// Intended to run serially with other compliance scans.
+func TestResourceQuotaExemptRegex(t *testing.T) {
+	if tc.TestType != "platform" && tc.TestType != "all" {
+		t.Skipf("Skipping TestResourceQuotaExemptRegex: -test-type is %s (use platform or all)", tc.TestType)
+	}
+	switch runtime.GOARCH {
+	case "arm64", "s390x", "ppc64le":
+		t.Skipf("Skipping TestResourceQuotaExemptRegex on architecture %s", runtime.GOARCH)
+	}
+
+	c, err := helpers.GenerateKubeConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate kube config: %s", err)
+	}
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	ns1 := fmt.Sprintf("ns-76105-a-%s", suffix)
+	ns2 := fmt.Sprintf("ns-76105-b-%s", suffix)
+	tpStig := fmt.Sprintf("tp-76105-stig-%s", suffix)
+	tpMod := fmt.Sprintf("tp-76105-mod-%s", suffix)
+	ssbStig := fmt.Sprintf("ssb-76105-stig-%s", suffix)
+	ssbMod := fmt.Sprintf("ssb-76105-mod-%s", suffix)
+
+	defer func() {
+		if err := helpers.DeleteScanBinding(tc, c, ssbStig); err != nil {
+			t.Logf("cleanup: delete ScanSettingBinding %s: %v", ssbStig, err)
+		} else {
+			if err := helpers.WaitForScanCleanup(tc, c, ssbStig); err != nil {
+				t.Logf("cleanup: WaitForScanCleanup %s: %v", ssbStig, err)
+			}
+		}
+		if err := helpers.DeleteScanBinding(tc, c, ssbMod); err != nil {
+			t.Logf("cleanup: delete ScanSettingBinding %s: %v", ssbMod, err)
+		} else {
+			if err := helpers.WaitForScanCleanup(tc, c, ssbMod); err != nil {
+				t.Logf("cleanup: WaitForScanCleanup %s: %v", ssbMod, err)
+			}
+		}
+		if err := helpers.DeleteTailoredProfile(tc, c, tpStig); err != nil {
+			t.Logf("cleanup: delete TailoredProfile %s: %v", tpStig, err)
+		}
+		if err := helpers.DeleteTailoredProfile(tc, c, tpMod); err != nil {
+			t.Logf("cleanup: delete TailoredProfile %s: %v", tpMod, err)
+		}
+		if err := helpers.DeleteNamespace(c, ns1); err != nil {
+			t.Logf("cleanup: delete namespace %s: %v", ns1, err)
+		}
+		if err := helpers.DeleteNamespace(c, ns2); err != nil {
+			t.Logf("cleanup: delete namespace %s: %v", ns2, err)
+		}
+	}()
+
+	if err := helpers.CreateTestNamespace(c, ns1); err != nil {
+		t.Fatalf("Failed to create test namespace %s: %s", ns1, err)
+	}
+	if err := helpers.CreateTestNamespace(c, ns2); err != nil {
+		t.Fatalf("Failed to create test namespace %s: %s", ns2, err)
+	}
+
+	exemptRegex, err := helpers.NonControlNamespacesExemptRegex(c)
+	if err != nil {
+		t.Fatalf("Failed to build exempt namespace regex: %s", err)
+	}
+	t.Logf("76105 exempt regex length: %d chars", len(exemptRegex))
+
+	const profileStig = "ocp4-stig"
+	const profileModerate = "ocp4-moderate"
+	if err := helpers.ValidateProfile(tc, c, profileStig); err != nil {
+		t.Fatalf("Profile %s not available: %s", profileStig, err)
+	}
+	if err := helpers.ValidateProfile(tc, c, profileModerate); err != nil {
+		t.Fatalf("Profile %s not available: %s", profileModerate, err)
+	}
+
+	if err := helpers.CreateTailoredProfileWithQuotaExemptVariable(tc, c, tpStig, profileStig, exemptRegex); err != nil {
+		t.Fatalf("Failed to create TailoredProfile %s: %s", tpStig, err)
+	}
+	if err := helpers.CreateTailoredProfileWithQuotaExemptVariable(tc, c, tpMod, profileModerate, exemptRegex); err != nil {
+		t.Fatalf("Failed to create TailoredProfile %s: %s", tpMod, err)
+	}
+	if err := helpers.WaitForTailoredProfileReady(tc, c, tpStig); err != nil {
+		t.Fatalf("TailoredProfile %s not ready: %s", tpStig, err)
+	}
+	if err := helpers.WaitForTailoredProfileReady(tc, c, tpMod); err != nil {
+		t.Fatalf("TailoredProfile %s not ready: %s", tpMod, err)
+	}
+
+	if err := helpers.CreateScanBinding(c, tc, ssbStig, tpStig, "TailoredProfile", "default"); err != nil {
+		t.Fatalf("Failed to create ScanSettingBinding %s: %s", ssbStig, err)
+	}
+	if err := helpers.CreateScanBinding(c, tc, ssbMod, tpMod, "TailoredProfile", "default"); err != nil {
+		t.Fatalf("Failed to create ScanSettingBinding %s: %s", ssbMod, err)
+	}
+	if err := helpers.WaitForComplianceSuite(tc, c, ssbStig); err != nil {
+		t.Fatalf("Compliance suite %s did not finish: %s", ssbStig, err)
+	}
+	if err := helpers.WaitForComplianceSuite(tc, c, ssbMod); err != nil {
+		t.Fatalf("Compliance suite %s did not finish: %s", ssbMod, err)
+	}
+
+	ccrStigName := tpStig + "-resource-requests-quota-per-project"
+	ccrModName := tpMod + "-resource-requests-quota"
+	st, err := helpers.GetComplianceCheckResultStatus(tc, c, ccrStigName)
+	if err != nil {
+		t.Fatalf("Failed to get ComplianceCheckResult %s: %s", ccrStigName, err)
+	}
+	if st != cmpv1alpha1.CheckResultPass {
+		t.Fatalf("Expected %s status PASS, got %s", ccrStigName, st)
+	}
+	st, err = helpers.GetComplianceCheckResultStatus(tc, c, ccrModName)
+	if err != nil {
+		t.Fatalf("Failed to get ComplianceCheckResult %s: %s", ccrModName, err)
+	}
+	if st != cmpv1alpha1.CheckResultPass {
+		t.Fatalf("Expected %s status PASS, got %s", ccrModName, st)
+	}
+	t.Logf("TestResourceQuotaExemptRegex: both quota CCRs are PASS")
 }
 
 func TestNodeCompliance(t *testing.T) {

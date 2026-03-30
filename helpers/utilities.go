@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ import (
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	extscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1733,6 +1735,144 @@ func ValidateProfile(tc *testConfig.TestConfig, c dynclient.Client, profileFQN s
 	}
 	log.Printf("Found profile %s", profileFQN)
 	return nil
+}
+
+// NonControlNamespacesExemptRegex builds a pipe-joined regex string of all namespace names that
+// are not default, kube-*, or openshift*, matching getNonControlNamespacesWithoutStatusChecking.
+// Each name segment is regexp-quoted so the value is safe as a regex alternation.
+func NonControlNamespacesExemptRegex(c dynclient.Client) (string, error) {
+	nsList := &corev1.NamespaceList{}
+	if err := c.List(goctx.TODO(), nsList); err != nil {
+		return "", fmt.Errorf("failed to list namespaces: %w", err)
+	}
+	var names []string
+	for i := range nsList.Items {
+		n := nsList.Items[i].Name
+		if n == "default" {
+			continue
+		}
+		if strings.HasPrefix(n, "kube-") {
+			continue
+		}
+		if strings.HasPrefix(n, "openshift") {
+			continue
+		}
+		names = append(names, regexp.QuoteMeta(n))
+	}
+	sort.Strings(names)
+	return strings.Join(names, "|"), nil
+}
+
+// CreateTestNamespace creates a namespace for tests (e.g. 76105).
+func CreateTestNamespace(c dynclient.Client, name string) error {
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+	}
+	err := c.Create(goctx.TODO(), ns)
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("failed to create namespace %s: %w", name, err)
+	}
+	return nil
+}
+
+// DeleteNamespace deletes a namespace by name; ignores NotFound.
+func DeleteNamespace(c dynclient.Client, name string) error {
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+	}
+	err := c.Delete(goctx.TODO(), ns)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete namespace %s: %w", name, err)
+	}
+	return nil
+}
+
+// CreateTailoredProfileWithQuotaExemptVariable creates a TailoredProfile that extends a
+// base profile and sets ocp4-var-resource-requests-quota-per-project-exempt-regex.
+func CreateTailoredProfileWithQuotaExemptVariable(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	name, extendsProfile, exemptRegex string,
+) error {
+	tp := &cmpv1alpha1.TailoredProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: tc.OperatorNamespace.Namespace,
+			Annotations: map[string]string{
+				"compliance.openshift.io/product-type": "Platform",
+			},
+		},
+		Spec: cmpv1alpha1.TailoredProfileSpec{
+			Extends: extendsProfile,
+			Title:   "76105 resource quota exempt variable",
+			Description: "Test ocp4-var-resource-requests-quota-per-project-exempt-regex " +
+				"(case 76105)",
+			SetValues: []cmpv1alpha1.VariableValueSpec{
+				{
+					Name:      "ocp4-var-resource-requests-quota-per-project-exempt-regex",
+					Rationale: "test",
+					Value:     exemptRegex,
+				},
+			},
+		},
+	}
+	err := c.Create(goctx.TODO(), tp)
+	if err != nil {
+		return fmt.Errorf("failed to create TailoredProfile %s: %w", name, err)
+	}
+	return nil
+}
+
+// WaitForTailoredProfileReady waits until the TailoredProfile status.state is READY.
+func WaitForTailoredProfileReady(tc *testConfig.TestConfig, c dynclient.Client, name string) error {
+	key := types.NamespacedName{Name: name, Namespace: tc.OperatorNamespace.Namespace}
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 180)
+	return backoff.RetryNotify(func() error {
+		tp := &cmpv1alpha1.TailoredProfile{}
+		if err := c.Get(goctx.TODO(), key, tp); err != nil {
+			return err
+		}
+		if tp.Status.State != cmpv1alpha1.TailoredProfileStateReady {
+			return fmt.Errorf("tailored profile %s state is %s (want READY)", name, tp.Status.State)
+		}
+		return nil
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("waiting for TailoredProfile %s READY after %s: %v", name, d.String(), err)
+	})
+}
+
+// DeleteTailoredProfile deletes a TailoredProfile by name; ignores NotFound.
+func DeleteTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client, name string) error {
+	tp := &cmpv1alpha1.TailoredProfile{}
+	key := types.NamespacedName{Name: name, Namespace: tc.OperatorNamespace.Namespace}
+	err := c.Get(goctx.TODO(), key, tp)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get TailoredProfile %s: %w", name, err)
+	}
+	if err := c.Delete(goctx.TODO(), tp); err != nil {
+		return fmt.Errorf("failed to delete TailoredProfile %s: %w", name, err)
+	}
+	log.Printf("Deleted TailoredProfile %s", name)
+	return nil
+}
+
+// GetComplianceCheckResultStatus returns the status field of a ComplianceCheckResult by metadata name.
+func GetComplianceCheckResultStatus(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	resultName string,
+) (cmpv1alpha1.ComplianceCheckStatus, error) {
+	ccr := &cmpv1alpha1.ComplianceCheckResult{}
+	key := types.NamespacedName{Name: resultName, Namespace: tc.OperatorNamespace.Namespace}
+	if err := c.Get(goctx.TODO(), key, ccr); err != nil {
+		return "", fmt.Errorf("failed to get ComplianceCheckResult %s: %w", resultName, err)
+	}
+	return ccr.Status, nil
 }
 
 // CreateResultMap creates a map of rule names to RuleTest structs from compliance check results.
