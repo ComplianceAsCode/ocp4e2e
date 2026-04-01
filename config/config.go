@@ -113,11 +113,21 @@ func setVersion() (string, error) {
 		return "", fmt.Errorf("failed get cluster version: %w", err)
 	}
 
-	r := regexp.MustCompile(`Server Version: ([1-9]\.[0-9]+)\..*`)
+	// Try to match Server Version first (preferred)
+	r := regexp.MustCompile(`Server Version: ([0-9]+\.[0-9]+)`)
 	matches := r.FindSubmatch(rawversion)
 
-	if len(matches) < 2 {
-		return "", fmt.Errorf("couldn't get server version from output: %s", rawversion)
+	if len(matches) >= 2 {
+		return string(matches[1]), nil
 	}
-	return string(matches[1]), nil
+
+	// Fallback to Kubernetes Version if Server Version not found
+	r2 := regexp.MustCompile(`Kubernetes Version: v([0-9]+\.[0-9]+)`)
+	matches = r2.FindSubmatch(rawversion)
+
+	if len(matches) >= 2 {
+		return string(matches[1]), nil
+	}
+
+	return "", fmt.Errorf("couldn't get server version from output: %s", rawversion)
 }
