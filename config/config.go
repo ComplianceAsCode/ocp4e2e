@@ -7,6 +7,7 @@ import (
 	"log"
 	"os/exec"
 	"regexp"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -31,6 +32,8 @@ type TestConfig struct {
 	OperatorNamespace        types.NamespacedName
 	Version                  string
 	ManualRemediationTimeout time.Duration
+	VariableTestEnabled      bool
+	Variables                map[string]string
 }
 
 var (
@@ -44,6 +47,8 @@ var (
 	bypassRemediations       bool
 	testType                 string
 	manualRemediationTimeout time.Duration
+	variableTestEnabled      bool
+	variables                string
 )
 
 // NewTestConfig creates a new TestConfig from the parsed flags and sets the
@@ -58,6 +63,18 @@ func NewTestConfig() *TestConfig {
 	defaultLogDir := "/logs/artifacts"
 	if logDir == "" {
 		logDir = defaultLogDir
+	}
+
+	// Parse variables from comma-separated key=value pairs
+	variableMap := make(map[string]string)
+	if variables != "" {
+		pairs := strings.Split(variables, ",")
+		for _, pair := range pairs {
+			kv := strings.SplitN(pair, "=", 2)
+			if len(kv) == 2 {
+				variableMap[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
+			}
+		}
 	}
 
 	return &TestConfig{
@@ -75,6 +92,8 @@ func NewTestConfig() *TestConfig {
 		OperatorNamespace:        types.NamespacedName{Name: "compliance-operator", Namespace: "openshift-compliance"},
 		Version:                  version,
 		ManualRemediationTimeout: manualRemediationTimeout,
+		VariableTestEnabled:      variableTestEnabled,
+		Variables:                variableMap,
 	}
 }
 
@@ -94,6 +113,10 @@ func DefineFlags() {
 	flag.StringVar(&testType, "test-type", "all", "Type of rules to test: 'platform', 'node', or 'all' (default)")
 	flag.DurationVar(&manualRemediationTimeout,
 		"manual-remediation-timeout", 30*time.Minute, "Timeout for manual remediation scripts")
+	flag.BoolVar(&variableTestEnabled, "variable-test", false,
+		"Enable variable customization testing")
+	flag.StringVar(&variables, "variables", "",
+		"Comma-separated variable assignments (e.g., 'var1=value1,var2=value2')")
 }
 
 // ValidateFlags checks that required flags are provided.
