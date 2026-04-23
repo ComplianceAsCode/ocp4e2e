@@ -7,6 +7,7 @@ toolchain go1.23.10
 require (
 	github.com/ComplianceAsCode/compliance-operator v1.7.0
 	github.com/cenkalti/backoff/v4 v4.3.0
+	github.com/openshift/api v0.0.0-20250320115527-3aa9dd5b9002
 	github.com/openshift/machine-config-operator v0.0.1-0.20250401081735-9026ff2d802e
 	gopkg.in/yaml.v2 v2.4.0
 	k8s.io/api v0.32.3
@@ -38,7 +39,6 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/onsi/ginkgo/v2 v2.22.1 // indirect
-	github.com/openshift/api v0.0.0-20250320115527-3aa9dd5b9002 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect

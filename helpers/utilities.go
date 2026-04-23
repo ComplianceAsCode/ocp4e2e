@@ -19,10 +19,12 @@ import (
 	cmpapis "github.com/ComplianceAsCode/compliance-operator/pkg/apis"
 	cmpv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
 	backoff "github.com/cenkalti/backoff/v4"
+	secv1 "github.com/openshift/api/security/v1"
 	mcfg "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io"
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	extscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -144,6 +146,9 @@ func GenerateKubeConfig() (dynclient.Client, error) {
 	}
 	if err := mcfg.Install(scheme); err != nil {
 		return nil, fmt.Errorf("failed to add MachineConfig scheme to runtime scheme: %w", err)
+	}
+	if err := secv1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add OpenShift security scheme to runtime scheme: %w", err)
 	}
 
 	dc, err := dynclient.New(cfg, dynclient.Options{Scheme: scheme})
@@ -454,45 +459,7 @@ func ensureOperatorGroupExists(c dynclient.Client, tc *testConfig.TestConfig) er
 
 // createTailoredProfile creates a TailoredProfile with the given rules.
 func createTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client, name string, rules []cmpv1alpha1.Rule) error {
-	ruleRefs := make([]cmpv1alpha1.RuleReferenceSpec, len(rules))
-	for i := range rules {
-		ruleRefs[i] = cmpv1alpha1.RuleReferenceSpec{
-			Name: rules[i].Name,
-		}
-	}
-
-	// Determine product type based on the first rule's check type so we
-	// can set the profile's product-type appropriately
-	annotations := make(map[string]string)
-	if len(rules) > 0 {
-		switch rules[0].CheckType {
-		case cmpv1alpha1.CheckTypeNode:
-			annotations["compliance.openshift.io/product-type"] = "Node"
-		case cmpv1alpha1.CheckTypePlatform:
-			annotations["compliance.openshift.io/product-type"] = "Platform"
-		}
-	}
-
-	description := fmt.Sprintf("Tailored profile containing all %s rules", name)
-	tailoredProfile := &cmpv1alpha1.TailoredProfile{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   tc.OperatorNamespace.Namespace,
-			Annotations: annotations,
-		},
-		Spec: cmpv1alpha1.TailoredProfileSpec{
-			Description: description,
-			EnableRules: ruleRefs,
-			Title:       name,
-		},
-	}
-
-	err := c.Create(goctx.TODO(), tailoredProfile)
-	if err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
-	}
-	log.Printf("Created %s tailored profile with %d rules", name, len(rules))
-	return nil
+	return CreateTailoredProfileWithVariables(tc, c, name, "", rules, nil)
 }
 
 // CreatePlatformTailoredProfile creates a TailoredProfile with all platform rules.
@@ -534,6 +501,283 @@ func CreateNodeTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client) er
 	}
 
 	return nil
+}
+
+// CreateTailoredProfileWithVariables creates a TailoredProfile with rule selections and variable values.
+// This extends createTailoredProfile to support the SetValues field for variable customization.
+func CreateTailoredProfileWithVariables(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	name string,
+	extendsProfile string,
+	rules []cmpv1alpha1.Rule,
+	variables []cmpv1alpha1.VariableValueSpec,
+) error {
+	var ruleRefs []cmpv1alpha1.RuleReferenceSpec
+	if len(rules) > 0 {
+		ruleRefs = make([]cmpv1alpha1.RuleReferenceSpec, len(rules))
+		for i := range rules {
+			ruleRefs[i] = cmpv1alpha1.RuleReferenceSpec{
+				Name: rules[i].Name,
+			}
+		}
+	}
+
+	// Determine product type based on first rule or base profile
+	annotations := make(map[string]string)
+	if len(rules) > 0 {
+		switch rules[0].CheckType {
+		case cmpv1alpha1.CheckTypeNode:
+			annotations["compliance.openshift.io/product-type"] = "Node"
+		case cmpv1alpha1.CheckTypePlatform:
+			annotations["compliance.openshift.io/product-type"] = "Platform"
+		}
+	} else if extendsProfile != "" {
+		// Query the base profile to get its product type
+		baseProfile := &cmpv1alpha1.Profile{}
+		err := c.Get(goctx.TODO(), dynclient.ObjectKey{
+			Name:      extendsProfile,
+			Namespace: tc.OperatorNamespace.Namespace,
+		}, baseProfile)
+		if err != nil {
+			return fmt.Errorf("failed to get base profile %s: %w", extendsProfile, err)
+		}
+		if productType, exists := baseProfile.Annotations["compliance.openshift.io/product-type"]; exists {
+			annotations["compliance.openshift.io/product-type"] = productType
+		}
+	}
+
+	description := fmt.Sprintf("Tailored profile %s with variable customization", name)
+	tailoredProfile := &cmpv1alpha1.TailoredProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Namespace:   tc.OperatorNamespace.Namespace,
+			Annotations: annotations,
+		},
+		Spec: cmpv1alpha1.TailoredProfileSpec{
+			Description: description,
+			Title:       name,
+			Extends:     extendsProfile,
+			EnableRules: ruleRefs,
+			SetValues:   variables,
+		},
+	}
+
+	err := c.Create(goctx.TODO(), tailoredProfile)
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("failed to create tailored profile with variables: %w", err)
+	}
+
+	log.Printf("Created tailored profile %s extending %s with %d variables", name, extendsProfile, len(variables))
+	return nil
+}
+
+// WaitForTailoredProfileReady waits for a TailoredProfile to reach READY state.
+func WaitForTailoredProfileReady(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	profileName string,
+) error {
+	key := types.NamespacedName{
+		Name:      profileName,
+		Namespace: tc.OperatorNamespace.Namespace,
+	}
+
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 60)
+	err := backoff.RetryNotify(func() error {
+		tp := &cmpv1alpha1.TailoredProfile{}
+		if err := c.Get(goctx.TODO(), key, tp); err != nil {
+			return err
+		}
+
+		if tp.Status.State == cmpv1alpha1.TailoredProfileStateError {
+			return backoff.Permanent(fmt.Errorf("tailored profile %s is in ERROR state: %s",
+				profileName, tp.Status.ErrorMessage))
+		}
+
+		if tp.Status.State != cmpv1alpha1.TailoredProfileStateReady {
+			return fmt.Errorf("tailored profile %s is in %s state", profileName, tp.Status.State)
+		}
+
+		return nil
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("Waiting for TailoredProfile %s to be ready after %s: %s",
+			profileName, d.String(), err)
+	})
+
+	if err != nil {
+		return fmt.Errorf("timeout waiting for TailoredProfile %s: %w", profileName, err)
+	}
+
+	log.Printf("TailoredProfile %s is READY", profileName)
+	return nil
+}
+
+// GetVariableDefaultValue retrieves the default value of a Variable CR.
+func GetVariableDefaultValue(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	variableName string,
+) (string, error) {
+	key := types.NamespacedName{
+		Name:      variableName,
+		Namespace: tc.OperatorNamespace.Namespace,
+	}
+
+	variable := &cmpv1alpha1.Variable{}
+	err := c.Get(goctx.TODO(), key, variable)
+	if err != nil {
+		return "", fmt.Errorf("failed to get variable %s: %w", variableName, err)
+	}
+
+	return variable.Value, nil
+}
+
+// ResultDifference represents a difference in compliance check results between two scans.
+type ResultDifference struct {
+	BaselineResult   string
+	CustomizedResult string
+}
+
+// CompareResults compares two result maps and returns differences.
+func CompareResults(
+	baselineResults map[string]string,
+	customizedResults map[string]string,
+) map[string]ResultDifference {
+	differences := make(map[string]ResultDifference)
+
+	// Find rules that exist in both and have different results
+	for ruleName, baselineResult := range baselineResults {
+		if customizedResult, exists := customizedResults[ruleName]; exists {
+			if baselineResult != customizedResult {
+				differences[ruleName] = ResultDifference{
+					BaselineResult:   baselineResult,
+					CustomizedResult: customizedResult,
+				}
+			}
+		}
+	}
+
+	return differences
+}
+
+// CreateTestNamespace creates a test namespace for variable testing.
+func CreateTestNamespace(c dynclient.Client, name string) error {
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+	}
+
+	err := c.Create(goctx.TODO(), ns)
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("failed to create namespace %s: %w", name, err)
+	}
+
+	log.Printf("Created test namespace: %s", name)
+	return nil
+}
+
+// DeleteTestNamespace deletes a test namespace.
+func DeleteTestNamespace(c dynclient.Client, name string) error {
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+	}
+
+	err := c.Delete(goctx.TODO(), ns)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete namespace %s: %w", name, err)
+	}
+
+	log.Printf("Deleted test namespace: %s", name)
+	return nil
+}
+
+// CreateTestSCC creates a test SecurityContextConstraints with allowed capabilities.
+func CreateTestSCC(c dynclient.Client, name string) error {
+	scc := &secv1.SecurityContextConstraints{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		AllowPrivilegedContainer: false,
+		AllowHostDirVolumePlugin: false,
+		AllowHostNetwork:         false,
+		AllowHostPorts:           false,
+		AllowHostPID:             false,
+		AllowHostIPC:             false,
+		ReadOnlyRootFilesystem:   false,
+		RequiredDropCapabilities: []corev1.Capability{},
+		DefaultAddCapabilities:   []corev1.Capability{},
+		AllowedCapabilities: []corev1.Capability{
+			"NET_ADMIN",
+			"SYS_TIME",
+		},
+		RunAsUser: secv1.RunAsUserStrategyOptions{
+			Type: secv1.RunAsUserStrategyMustRunAsRange,
+		},
+		SELinuxContext: secv1.SELinuxContextStrategyOptions{
+			Type: secv1.SELinuxStrategyMustRunAs,
+		},
+		FSGroup: secv1.FSGroupStrategyOptions{
+			Type: secv1.FSGroupStrategyMustRunAs,
+		},
+		SupplementalGroups: secv1.SupplementalGroupsStrategyOptions{
+			Type: secv1.SupplementalGroupsStrategyMustRunAs,
+		},
+		Users:  []string{},
+		Groups: []string{},
+	}
+
+	err := c.Create(goctx.TODO(), scc)
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("failed to create SCC %s: %w", name, err)
+	}
+
+	log.Printf("Created test SCC: %s with allowed capabilities", name)
+	return nil
+}
+
+// DeleteTestSCC deletes a test SecurityContextConstraints.
+func DeleteTestSCC(c dynclient.Client, name string) error {
+	scc := &secv1.SecurityContextConstraints{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+	}
+
+	err := c.Delete(goctx.TODO(), scc)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete SCC %s: %w", name, err)
+	}
+
+	log.Printf("Deleted test SCC: %s", name)
+	return nil
+}
+
+// GetNonControlNamespaces returns a list of non-control-plane namespace names.
+// This excludes kube-* and openshift-* namespaces.
+func GetNonControlNamespaces(c dynclient.Client) ([]string, error) {
+	nsList := &corev1.NamespaceList{}
+	err := c.List(goctx.TODO(), nsList)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list namespaces: %w", err)
+	}
+
+	var nonControlNamespaces []string
+	for _, ns := range nsList.Items {
+		name := ns.Name
+		// Skip control plane namespaces
+		if strings.HasPrefix(name, "kube-") ||
+			strings.HasPrefix(name, "openshift-") ||
+			name == "default" {
+			continue
+		}
+		nonControlNamespaces = append(nonControlNamespaces, name)
+	}
+
+	return nonControlNamespaces, nil
 }
 
 // findPlatformRules finds all Rule custom resources of type Platform and returns them.
