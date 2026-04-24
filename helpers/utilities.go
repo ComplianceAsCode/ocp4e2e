@@ -3,6 +3,7 @@ package helpers
 import (
 	"bufio"
 	goctx "context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,10 +20,12 @@ import (
 	cmpapis "github.com/ComplianceAsCode/compliance-operator/pkg/apis"
 	cmpv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
 	backoff "github.com/cenkalti/backoff/v4"
+	configv1 "github.com/openshift/api/config/v1"
 	mcfg "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io"
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	extscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -144,6 +147,9 @@ func GenerateKubeConfig() (dynclient.Client, error) {
 	}
 	if err := mcfg.Install(scheme); err != nil {
 		return nil, fmt.Errorf("failed to add MachineConfig scheme to runtime scheme: %w", err)
+	}
+	if err := configv1.Install(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add OpenShift config scheme to runtime scheme: %w", err)
 	}
 
 	dc, err := dynclient.New(cfg, dynclient.Options{Scheme: scheme})
@@ -1902,4 +1908,365 @@ func convertMarkdownToHTML(markdown string) string {
 %s
 </body>
 </html>`, html)
+}
+
+// ============================================================================
+// CIS Profile Test Helper Functions
+// ============================================================================
+
+// CheckEtcdEncryption checks if etcd encryption is enabled on the cluster.
+// Returns an error if encryption is not configured or if it's using aescbc.
+func CheckEtcdEncryption(c dynclient.Client) error {
+	apiserver := &configv1.APIServer{}
+	err := c.Get(goctx.TODO(), types.NamespacedName{Name: "cluster"}, apiserver)
+	if err != nil {
+		return fmt.Errorf("failed to get apiserver config: %w", err)
+	}
+
+	if apiserver.Spec.Encryption.Type == "" {
+		return fmt.Errorf("etcd encryption is not configured")
+	}
+
+	// Skip if encryption type is aescbc (destructive and time-consuming to change)
+	if apiserver.Spec.Encryption.Type == "aescbc" {
+		return fmt.Errorf("encryption type is aescbc")
+	}
+
+	return nil
+}
+
+// GetWorkerNodes returns a list of worker nodes matching the provided label selector.
+func GetWorkerNodes(c dynclient.Client, labelSelector map[string]string) ([]corev1.Node, error) {
+	nodeList := &corev1.NodeList{}
+	opts := &dynclient.ListOptions{
+		LabelSelector: labels.SelectorFromSet(labelSelector),
+	}
+	err := c.List(goctx.TODO(), nodeList, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list nodes: %w", err)
+	}
+	return nodeList.Items, nil
+}
+
+// LabelNode adds a label to a node.
+func LabelNode(c dynclient.Client, nodeName, labelKey, labelValue string) error {
+	node := &corev1.Node{}
+	err := c.Get(goctx.TODO(), types.NamespacedName{Name: nodeName}, node)
+	if err != nil {
+		return fmt.Errorf("failed to get node %s: %w", nodeName, err)
+	}
+
+	nodeCopy := node.DeepCopy()
+	if nodeCopy.Labels == nil {
+		nodeCopy.Labels = make(map[string]string)
+	}
+	nodeCopy.Labels[labelKey] = labelValue
+
+	err = c.Update(goctx.TODO(), nodeCopy)
+	if err != nil {
+		return fmt.Errorf("failed to label node %s: %w", nodeName, err)
+	}
+	log.Printf("Labeled node %s with %s=%s", nodeName, labelKey, labelValue)
+	return nil
+}
+
+// UnlabelNode removes a label from a node.
+func UnlabelNode(c dynclient.Client, nodeName, labelKey string) error {
+	node := &corev1.Node{}
+	err := c.Get(goctx.TODO(), types.NamespacedName{Name: nodeName}, node)
+	if err != nil {
+		return fmt.Errorf("failed to get node %s: %w", nodeName, err)
+	}
+
+	nodeCopy := node.DeepCopy()
+	delete(nodeCopy.Labels, labelKey)
+
+	err = c.Update(goctx.TODO(), nodeCopy)
+	if err != nil {
+		return fmt.Errorf("failed to remove label from node %s: %w", nodeName, err)
+	}
+	log.Printf("Removed label %s from node %s", labelKey, nodeName)
+	return nil
+}
+
+// CreateMachineConfigPool creates a custom MachineConfigPool for testing.
+func CreateMachineConfigPool(c dynclient.Client, poolName string, nodeSelector, poolLabels map[string]string) error {
+	pool := &mcfgv1.MachineConfigPool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   poolName,
+			Labels: poolLabels,
+		},
+		Spec: mcfgv1.MachineConfigPoolSpec{
+			NodeSelector: &metav1.LabelSelector{
+				MatchLabels: nodeSelector,
+			},
+			MachineConfigSelector: &metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      mcfgv1.MachineConfigRoleLabelKey,
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{"worker", poolName},
+					},
+				},
+			},
+		},
+	}
+
+	err := c.Create(goctx.TODO(), pool)
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			log.Printf("MachineConfigPool %s already exists", poolName)
+			return nil
+		}
+		return fmt.Errorf("failed to create MachineConfigPool %s: %w", poolName, err)
+	}
+	log.Printf("Created MachineConfigPool %s", poolName)
+	return nil
+}
+
+// DeleteMachineConfigPool deletes a MachineConfigPool with proper cleanup.
+// It pauses the pool before deletion to prevent unnecessary node updates.
+func DeleteMachineConfigPool(c dynclient.Client, poolName string) error {
+	pool := &mcfgv1.MachineConfigPool{}
+	err := c.Get(goctx.TODO(), types.NamespacedName{Name: poolName}, pool)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Printf("MachineConfigPool %s not found, nothing to delete", poolName)
+			return nil
+		}
+		return fmt.Errorf("failed to get MachineConfigPool %s: %w", poolName, err)
+	}
+
+	// Pause the pool before deleting
+	if !pool.Spec.Paused {
+		poolCopy := pool.DeepCopy()
+		poolCopy.Spec.Paused = true
+		err = c.Update(goctx.TODO(), poolCopy)
+		if err != nil {
+			log.Printf("Warning: failed to pause MachineConfigPool %s: %s", poolName, err)
+		} else {
+			log.Printf("Paused MachineConfigPool %s", poolName)
+			time.Sleep(5 * time.Second) // Wait for pausing to take effect
+		}
+	}
+
+	err = c.Delete(goctx.TODO(), pool)
+	if err != nil {
+		return fmt.Errorf("failed to delete MachineConfigPool %s: %w", poolName, err)
+	}
+	log.Printf("Deleted MachineConfigPool %s", poolName)
+	return nil
+}
+
+// CreateKubeletConfig creates a KubeletConfig for testing.
+func CreateKubeletConfig(c dynclient.Client, name string, poolLabels map[string]string, kubeletConfig map[string]interface{}) error {
+	rawConfig, err := json.Marshal(kubeletConfig)
+	if err != nil {
+		return fmt.Errorf("failed to marshal kubelet config: %w", err)
+	}
+
+	kc := &mcfgv1.KubeletConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Spec: mcfgv1.KubeletConfigSpec{
+			MachineConfigPoolSelector: &metav1.LabelSelector{
+				MatchLabels: poolLabels,
+			},
+			KubeletConfig: &runtime.RawExtension{
+				Raw: rawConfig,
+			},
+		},
+	}
+
+	err = c.Create(goctx.TODO(), kc)
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			log.Printf("KubeletConfig %s already exists", name)
+			return nil
+		}
+		return fmt.Errorf("failed to create KubeletConfig %s: %w", name, err)
+	}
+	log.Printf("Created KubeletConfig %s", name)
+	return nil
+}
+
+// DeleteKubeletConfig deletes a KubeletConfig.
+func DeleteKubeletConfig(c dynclient.Client, name string) error {
+	kc := &mcfgv1.KubeletConfig{}
+	err := c.Get(goctx.TODO(), types.NamespacedName{Name: name}, kc)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Printf("KubeletConfig %s not found, nothing to delete", name)
+			return nil
+		}
+		return fmt.Errorf("failed to get KubeletConfig %s: %w", name, err)
+	}
+
+	err = c.Delete(goctx.TODO(), kc)
+	if err != nil {
+		return fmt.Errorf("failed to delete KubeletConfig %s: %w", name, err)
+	}
+	log.Printf("Deleted KubeletConfig %s", name)
+	return nil
+}
+
+// WaitForKubeletConfigSuccess waits for a KubeletConfig to be successfully applied.
+func WaitForKubeletConfigSuccess(tc *testConfig.TestConfig, c dynclient.Client, name string) error {
+	log.Printf("Waiting for KubeletConfig %s to be applied successfully", name)
+
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 240) // 20 minutes
+	err := backoff.RetryNotify(func() error {
+		kc := &mcfgv1.KubeletConfig{}
+		err := c.Get(goctx.TODO(), types.NamespacedName{Name: name}, kc)
+		if err != nil {
+			return fmt.Errorf("failed to get KubeletConfig: %w", err)
+		}
+
+		for _, condition := range kc.Status.Conditions {
+			if condition.Type == "Success" && condition.Status == corev1.ConditionTrue {
+				return nil
+			}
+		}
+		return fmt.Errorf("KubeletConfig not yet successful")
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("Still waiting for KubeletConfig %s after %s: %s", name, d.String(), err)
+	})
+
+	if err != nil {
+		return fmt.Errorf("timeout waiting for KubeletConfig %s: %w", name, err)
+	}
+	log.Printf("KubeletConfig %s applied successfully", name)
+	return nil
+}
+
+// CreateScanSettingWithAutoApply creates a ScanSetting with auto-apply remediations enabled.
+func CreateScanSettingWithAutoApply(c dynclient.Client, namespace, name string, roles []string) error {
+	scanSetting := &cmpv1alpha1.ScanSetting{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		ComplianceSuiteSettings: cmpv1alpha1.ComplianceSuiteSettings{
+			AutoApplyRemediations:  true,
+			AutoUpdateRemediations: true,
+			Schedule:               "0 1 * * *",
+		},
+		ComplianceScanSettings: cmpv1alpha1.ComplianceScanSettings{
+			RawResultStorage: cmpv1alpha1.RawResultStorageSettings{
+				Size:     "2Gi",
+				Rotation: 5,
+			},
+			Debug: false,
+		},
+		Roles: roles,
+	}
+
+	err := c.Create(goctx.TODO(), scanSetting)
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			log.Printf("ScanSetting %s already exists", name)
+			return nil
+		}
+		return fmt.Errorf("failed to create ScanSetting %s: %w", name, err)
+	}
+	log.Printf("Created ScanSetting %s with auto-apply remediations", name)
+	return nil
+}
+
+// RescanSuite triggers a rescan for all scans in a suite.
+func RescanSuite(tc *testConfig.TestConfig, c dynclient.Client, suiteName, namespace string) error {
+	log.Printf("Triggering rescan for suite %s", suiteName)
+
+	scanList := &cmpv1alpha1.ComplianceScanList{}
+	labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
+	if err != nil {
+		return fmt.Errorf("failed to parse label selector: %w", err)
+	}
+	opts := &dynclient.ListOptions{
+		LabelSelector: labelSelector,
+		Namespace:     namespace,
+	}
+	err = c.List(goctx.TODO(), scanList, opts)
+	if err != nil {
+		return fmt.Errorf("failed to list scans: %w", err)
+	}
+
+	for i := range scanList.Items {
+		scan := &scanList.Items[i]
+		scanCopy := scan.DeepCopy()
+		if scanCopy.Annotations == nil {
+			scanCopy.Annotations = make(map[string]string)
+		}
+		scanCopy.Annotations[cmpv1alpha1.ComplianceScanRescanAnnotation] = ""
+		err = c.Update(goctx.TODO(), scanCopy)
+		if err != nil {
+			log.Printf("Warning: failed to trigger rescan for %s: %s", scan.Name, err)
+		} else {
+			log.Printf("Triggered rescan for scan %s", scan.Name)
+		}
+	}
+
+	return nil
+}
+
+// GetCheckResultsBySuite retrieves all check results for a suite.
+func GetCheckResultsBySuite(c dynclient.Client, suiteName, namespace string) (map[string]cmpv1alpha1.ComplianceCheckStatus, error) {
+	results := make(map[string]cmpv1alpha1.ComplianceCheckStatus)
+
+	checkList := &cmpv1alpha1.ComplianceCheckResultList{}
+	labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse label selector: %w", err)
+	}
+	opts := &dynclient.ListOptions{
+		LabelSelector: labelSelector,
+		Namespace:     namespace,
+	}
+	err = c.List(goctx.TODO(), checkList, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list check results: %w", err)
+	}
+
+	for i := range checkList.Items {
+		check := &checkList.Items[i]
+		results[check.Name] = check.Status
+	}
+
+	return results, nil
+}
+
+// WaitForMachineConfigPoolUpdate waits for a specific MachineConfigPool to complete updating.
+func WaitForMachineConfigPoolUpdate(tc *testConfig.TestConfig, c dynclient.Client, poolName string) error {
+	log.Printf("Waiting for MachineConfigPool %s to update (this may take 10-20 minutes)", poolName)
+
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(30*time.Second), 60) // 30 minutes
+	err := backoff.RetryNotify(func() error {
+		currentMCP := &mcfgv1.MachineConfigPool{}
+		err := c.Get(goctx.TODO(), types.NamespacedName{Name: poolName}, currentMCP)
+		if err != nil {
+			return fmt.Errorf("failed to get MachineConfigPool: %w", err)
+		}
+
+		// Check if MachineConfigPool is updated
+		if isMachineConfigPoolUpdated(currentMCP) {
+			log.Printf("MachineConfigPool %s is updated: %d/%d machines updated",
+				currentMCP.Name, currentMCP.Status.UpdatedMachineCount, currentMCP.Status.MachineCount)
+			return nil
+		}
+
+		return fmt.Errorf("MachineConfigPool updating: %d/%d machines updated, %d degraded",
+			currentMCP.Status.UpdatedMachineCount,
+			currentMCP.Status.MachineCount,
+			currentMCP.Status.DegradedMachineCount)
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("Still waiting for MachineConfigPool %s after %s: %s", poolName, d.String(), err)
+	})
+
+	if err != nil {
+		return fmt.Errorf("timeout waiting for MachineConfigPool %s to update: %w", poolName, err)
+	}
+
+	log.Printf("MachineConfigPool %s updated successfully", poolName)
+	return nil
 }

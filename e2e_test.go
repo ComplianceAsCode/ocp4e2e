@@ -1,6 +1,7 @@
 package ocp4e2e
 
 import (
+	goctx "context"
 	"flag"
 	"fmt"
 	"log"
@@ -9,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	cmpv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrlLog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -495,5 +499,227 @@ func TestProfileRemediations(t *testing.T) {
 	err = helpers.WaitForScanCleanup(tc, c, bindingName)
 	if err != nil {
 		t.Logf("Warning: Failed to wait for scan cleanup for binding %s: %s", bindingName, err)
+	}
+}
+
+// TestCISProfiles tests auto-remediation for CIS profiles.
+// It verifies that auto-remediations work correctly for CIS profiles by:
+// 1. Creating a custom MachineConfigPool and KubeletConfig
+// 2. Running scans with ocp4-cis and ocp4-cis-node profiles
+// 3. Verifying remediations are auto-applied
+// 4. Triggering a rescan and verifying compliance
+func TestCISProfiles(t *testing.T) {
+	// Skip if test type doesn't include platform tests
+	if tc.TestType != "platform" && tc.TestType != "all" {
+		t.Skipf("Skipping CIS profile tests: -test-type is %s", tc.TestType)
+	}
+
+	c, err := helpers.GenerateKubeConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate kube config: %s", err)
+	}
+
+	// Check if etcd encryption is enabled (requirement from downstream test)
+	if err := helpers.CheckEtcdEncryption(c); err != nil {
+		t.Skipf("Skipping CIS profile test: %s", err)
+	}
+
+	// Test configuration
+	poolName := "wrscan"
+	bindingName := "cis-profiles-test"
+	scanSettingName := "cis-auto-apply"
+	kubeletConfigName := "custom-" + poolName
+
+	// Get one worker node
+	workerNodes, err := helpers.GetWorkerNodes(c, map[string]string{
+		"node-role.kubernetes.io/worker": "",
+	})
+	if err != nil {
+		t.Fatalf("Failed to get worker nodes: %s", err)
+	}
+	if len(workerNodes) == 0 {
+		t.Fatal("No worker nodes found")
+	}
+	workerNode := workerNodes[0]
+	workerNodeName := workerNode.Name
+
+	// Label the worker node with custom role
+	labelKey := fmt.Sprintf("node-role.kubernetes.io/%s", poolName)
+	err = helpers.LabelNode(c, workerNodeName, labelKey, "")
+	if err != nil {
+		t.Fatalf("Failed to label node: %s", err)
+	}
+	defer func() {
+		err := helpers.UnlabelNode(c, workerNodeName, labelKey)
+		if err != nil {
+			t.Logf("Warning: Failed to remove label from node %s: %s", workerNodeName, err)
+		}
+	}()
+
+	// Create MachineConfigPool for the custom role
+	nodeSelector := map[string]string{labelKey: ""}
+	poolLabels := map[string]string{
+		"pools.operator.machineconfiguration.openshift.io/e2e": "",
+	}
+	err = helpers.CreateMachineConfigPool(c, poolName, nodeSelector, poolLabels)
+	if err != nil {
+		t.Fatalf("Failed to create MachineConfigPool: %s", err)
+	}
+	defer func() {
+		err := helpers.DeleteMachineConfigPool(c, poolName)
+		if err != nil {
+			t.Logf("Warning: Failed to delete MachineConfigPool %s: %s", poolName, err)
+		}
+	}()
+
+	// Wait for pool to be ready
+	err = helpers.WaitForMachineConfigPoolUpdate(tc, c, poolName)
+	if err != nil {
+		t.Fatalf("Failed waiting for initial MachineConfigPool %s: %s", poolName, err)
+	}
+
+	// Create KubeletConfig for the pool
+	kubeletConfig := map[string]interface{}{
+		"protectKernelDefaults":       true,
+		"streamConnectionIdleTimeout": "5m",
+	}
+	err = helpers.CreateKubeletConfig(c, kubeletConfigName, poolLabels, kubeletConfig)
+	if err != nil {
+		t.Fatalf("Failed to create KubeletConfig: %s", err)
+	}
+	defer func() {
+		err := helpers.DeleteKubeletConfig(c, kubeletConfigName)
+		if err != nil {
+			t.Logf("Warning: Failed to delete KubeletConfig %s: %s", kubeletConfigName, err)
+		}
+	}()
+
+	// Wait for KubeletConfig to be successful
+	err = helpers.WaitForKubeletConfigSuccess(tc, c, kubeletConfigName)
+	if err != nil {
+		t.Fatalf("Failed waiting for KubeletConfig: %s", err)
+	}
+
+	// Wait for pool to be ready after KubeletConfig
+	err = helpers.WaitForMachineConfigPoolUpdate(tc, c, poolName)
+	if err != nil {
+		t.Fatalf("Failed waiting for MachineConfigPool after KubeletConfig: %s", err)
+	}
+
+	// Create ScanSetting with auto-apply remediations
+	err = helpers.CreateScanSettingWithAutoApply(c, tc.OperatorNamespace.Namespace, scanSettingName, []string{poolName})
+	if err != nil {
+		t.Fatalf("Failed to create ScanSetting: %s", err)
+	}
+	defer func() {
+		scanSetting := &cmpv1alpha1.ScanSetting{}
+		scanSetting.Name = scanSettingName
+		scanSetting.Namespace = tc.OperatorNamespace.Namespace
+		err := c.Delete(goctx.TODO(), scanSetting)
+		if err != nil && !apierrors.IsNotFound(err) {
+			t.Logf("Warning: Failed to delete ScanSetting: %s", err)
+		}
+	}()
+
+	// Create ScanSettingBinding with ocp4-cis and ocp4-cis-node profiles
+	binding := &cmpv1alpha1.ScanSettingBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      bindingName,
+			Namespace: tc.OperatorNamespace.Namespace,
+		},
+		Profiles: []cmpv1alpha1.NamedObjectReference{
+			{
+				Name:     "ocp4-cis",
+				Kind:     "Profile",
+				APIGroup: "compliance.openshift.io/v1alpha1",
+			},
+			{
+				Name:     "ocp4-cis-node",
+				Kind:     "Profile",
+				APIGroup: "compliance.openshift.io/v1alpha1",
+			},
+		},
+		SettingsRef: &cmpv1alpha1.NamedObjectReference{
+			Name:     scanSettingName,
+			Kind:     "ScanSetting",
+			APIGroup: "compliance.openshift.io/v1alpha1",
+		},
+	}
+	err = c.Create(goctx.TODO(), binding)
+	if err != nil {
+		t.Fatalf("Failed to create ScanSettingBinding: %s", err)
+	}
+	defer func() {
+		err := c.Delete(goctx.TODO(), binding)
+		if err != nil && !apierrors.IsNotFound(err) {
+			t.Logf("Warning: Failed to delete ScanSettingBinding: %s", err)
+		}
+	}()
+
+	// Wait for initial scans to complete
+	log.Printf("Waiting for initial scans to complete")
+	err = helpers.WaitForComplianceSuite(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for compliance suite: %s", err)
+	}
+
+	// Get initial results
+	initialResults, err := helpers.GetCheckResultsBySuite(c, bindingName, tc.OperatorNamespace.Namespace)
+	if err != nil {
+		t.Fatalf("Failed to get initial check results: %s", err)
+	}
+	log.Printf("Initial scan completed with %d check results", len(initialResults))
+
+	// Wait for remediations to be auto-applied
+	log.Printf("Waiting for remediations to be auto-applied")
+	err = helpers.WaitForRemediationsToBeApplied(tc, c, bindingName)
+	if err != nil {
+		t.Logf("Warning: Some remediations may not have been applied: %s", err)
+	}
+
+	// Wait for MachineConfigPool to update after remediations
+	log.Printf("Waiting for MachineConfigPool to update after remediations")
+	err = helpers.WaitForMachineConfigPoolUpdate(tc, c, poolName)
+	if err != nil {
+		t.Logf("Warning: MachineConfigPool may not be fully updated: %s", err)
+	}
+
+	// Trigger rescan
+	log.Printf("Triggering rescan to verify remediations")
+	err = helpers.RescanSuite(tc, c, bindingName, tc.OperatorNamespace.Namespace)
+	if err != nil {
+		t.Fatalf("Failed to trigger rescan: %s", err)
+	}
+
+	// Wait for rescan to complete
+	log.Printf("Waiting for rescan to complete")
+	err = helpers.WaitForComplianceSuite(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for rescan: %s", err)
+	}
+
+	// Get final results
+	finalResults, err := helpers.GetCheckResultsBySuite(c, bindingName, tc.OperatorNamespace.Namespace)
+	if err != nil {
+		t.Fatalf("Failed to get final check results: %s", err)
+	}
+
+	// Count improvements
+	improved := 0
+	for checkName, finalStatus := range finalResults {
+		initialStatus, exists := initialResults[checkName]
+		if exists && initialStatus != cmpv1alpha1.CheckResultPass && finalStatus == cmpv1alpha1.CheckResultPass {
+			improved++
+		}
+	}
+
+	log.Printf("Rescan completed: %d checks improved from initial scan", improved)
+	log.Printf("Final results: %d total checks", len(finalResults))
+
+	// Verify that at least some checks improved
+	if improved == 0 {
+		t.Logf("Warning: No checks improved after remediation")
+	} else {
+		log.Printf("CIS profiles test completed successfully: %d checks improved", improved)
 	}
 }

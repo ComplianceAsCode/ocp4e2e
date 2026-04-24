@@ -37,6 +37,10 @@ e2e-profile: install-jq ## Run TestProfile test only
 e2e-profile-remediations: install-jq ## Run TestProfile test only
 	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestProfileRemediations$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) | tee .e2e-profile-test-results.out
 
+.PHONY: e2e-cis
+e2e-cis: install-jq ## Run CIS profiles auto-remediation test (test cases 46100, 46302, 54323, 66793)
+	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestCISProfiles$$ -install-operator=$(INSTALL_OPERATOR) -test-type="platform" | tee .e2e-cis-test-results.out
+
 .PHONY: help
 help: ## Show this help screen
 	@echo 'Usage: make <OPTIONS> ... <TARGETS>'
