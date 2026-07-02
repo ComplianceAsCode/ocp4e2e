@@ -28,6 +28,12 @@ func Setup(tc *config.TestConfig) error {
 		}
 	}
 
+	// Optionally install OpenShift Virtualization (CNV) so the OCP-Virt
+	// profiles can be scanned on a cluster that doesn't already have it.
+	if err := installVirtualizationOperator(c, tc); err != nil {
+		return fmt.Errorf("failed to install OpenShift Virtualization: %w", err)
+	}
+
 	// At this point, operator has created ProfileBundles with custom content image
 	// (if custom image was specified, it was added to Subscription before creation)
 	if err := waitForValidTestProfileBundles(c, tc); err != nil {
