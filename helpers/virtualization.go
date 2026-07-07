@@ -87,12 +87,19 @@ func installVirtualizationOperator(c dynclient.Client, tc *testConfig.TestConfig
 		return err
 	}
 
-	hco := &unstructured.Unstructured{}
-	hco.SetGroupVersionKind(hyperConvergedGVK)
-	hco.SetNamespace(virtNamespace)
-	hco.SetName(hcoName)
-	hco.Object["spec"] = map[string]interface{}{}
-	if err := createIfNotExists(c, hco); err != nil {
+	// Create the HyperConverged CR, retrying to tolerate the operator's
+	// validating webhook not being ready immediately after the CRD appears.
+	hcoBo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 60)
+	if err := backoff.RetryNotify(func() error {
+		hco := &unstructured.Unstructured{}
+		hco.SetGroupVersionKind(hyperConvergedGVK)
+		hco.SetNamespace(virtNamespace)
+		hco.SetName(hcoName)
+		hco.Object["spec"] = map[string]interface{}{}
+		return createIfNotExists(c, hco)
+	}, hcoBo, func(err error, d time.Duration) {
+		log.Printf("Waiting to create HyperConverged CR after %s: %s", d.String(), err)
+	}); err != nil {
 		return fmt.Errorf("failed to create HyperConverged CR: %w", err)
 	}
 
