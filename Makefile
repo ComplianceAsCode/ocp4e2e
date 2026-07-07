@@ -10,6 +10,12 @@ INSTALL_OPERATOR?=true
 BYPASS_REMEDIATIONS?=false
 # Type of rules to test: platform, node, or all
 TEST_TYPE?=all
+# Install the OpenShift Virtualization (CNV) operator during setup. Set to true
+# for the OCP-Virt profiles so they can run on a cluster without CNV.
+INSTALL_VIRT?=false
+# Path (inside the content image) to the CEL content YAML. Set for CEL profiles
+# (e.g. the CIS OpenShift Virtualization benchmark), e.g. ocp4-cel-content.yaml.
+CEL_CONTENT_FILE?=
 
 GOLANGCI_LINT_VERSION=latest
 BUILD_DIR := build
@@ -31,11 +37,11 @@ e2e-node: install-jq ## Run only node compliance tests
 
 .PHONY: e2e-profile
 e2e-profile: install-jq ## Run TestProfile test only
-	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestProfile$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) | tee .e2e-profile-test-results.out
+	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestProfile$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) -install-virt=$(INSTALL_VIRT) -cel-content-file="$(CEL_CONTENT_FILE)" | tee .e2e-profile-test-results.out
 
 .PHONY: e2e-profile-remediations
 e2e-profile-remediations: install-jq ## Run TestProfile test only
-	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestProfileRemediations$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) | tee .e2e-profile-test-results.out
+	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestProfileRemediations$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) -install-virt=$(INSTALL_VIRT) -cel-content-file="$(CEL_CONTENT_FILE)" | tee .e2e-profile-test-results.out
 
 .PHONY: help
 help: ## Show this help screen
