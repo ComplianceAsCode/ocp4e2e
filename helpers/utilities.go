@@ -304,6 +304,39 @@ func waitForOperatorToBeReady(c dynclient.Client, tc *testConfig.TestConfig) err
 	return nil
 }
 
+// ensureCELContentFile sets spec.celContentFile on the operator-created ocp4
+// ProfileBundle so CEL profiles (e.g. the CIS OpenShift Virtualization
+// benchmark) are parsed alongside the XCCDF datastream. The ProfileBundle is
+// created by the operator, so retry until it exists.
+func ensureCELContentFile(c dynclient.Client, tc *testConfig.TestConfig) error {
+	if tc.CELContentFile == "" {
+		return nil
+	}
+	key := types.NamespacedName{
+		Name:      "ocp4",
+		Namespace: tc.OperatorNamespace.Namespace,
+	}
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 180)
+	err := backoff.RetryNotify(func() error {
+		pb := &cmpv1alpha1.ProfileBundle{}
+		if err := c.Get(goctx.TODO(), key, pb); err != nil {
+			return err
+		}
+		if pb.Spec.CELContentFile == tc.CELContentFile {
+			return nil
+		}
+		pb.Spec.CELContentFile = tc.CELContentFile
+		return c.Update(goctx.TODO(), pb)
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("Still waiting to set celContentFile on ProfileBundle ocp4 after %s: %s", d.String(), err)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to set celContentFile on ProfileBundle ocp4: %w", err)
+	}
+	log.Printf("ProfileBundle ocp4 celContentFile set to %s", tc.CELContentFile)
+	return nil
+}
+
 func waitForValidTestProfileBundles(c dynclient.Client, tc *testConfig.TestConfig) error {
 	bundleNames := []string{"ocp4", "rhcos4"}
 
