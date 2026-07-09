@@ -16,6 +16,14 @@ INSTALL_VIRT?=false
 # Path (inside the content image) to the CEL content YAML. Set for CEL profiles
 # (e.g. the CIS OpenShift Virtualization benchmark), e.g. ocp4-cel-content.yaml.
 CEL_CONTENT_FILE?=
+# Content image to test. Leave empty to use the built-in default; set to a
+# custom image (e.g. one built with CEL content) to test it.
+CONTENT_IMAGE?=
+CONTENT_IMAGE_FLAG:=$(if $(strip $(CONTENT_IMAGE)),-content-image="$(CONTENT_IMAGE)")
+# Directory for logs/artifacts (assertion files, reports). Defaults to the CI
+# path; override for local runs, e.g. LOG_DIR=/tmp/artifacts.
+LOG_DIR?=
+LOG_DIR_FLAG:=$(if $(strip $(LOG_DIR)),-log-dir="$(LOG_DIR)")
 
 GOLANGCI_LINT_VERSION=latest
 BUILD_DIR := build
@@ -37,11 +45,11 @@ e2e-node: install-jq ## Run only node compliance tests
 
 .PHONY: e2e-profile
 e2e-profile: install-jq ## Run TestProfile test only
-	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestProfile$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) -install-virt=$(INSTALL_VIRT) -cel-content-file="$(CEL_CONTENT_FILE)" | tee .e2e-profile-test-results.out
+	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestProfile$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) -install-virt=$(INSTALL_VIRT) -cel-content-file="$(CEL_CONTENT_FILE)" $(CONTENT_IMAGE_FLAG) $(LOG_DIR_FLAG) | tee .e2e-profile-test-results.out
 
 .PHONY: e2e-profile-remediations
 e2e-profile-remediations: install-jq ## Run TestProfile test only
-	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestProfileRemediations$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) -install-virt=$(INSTALL_VIRT) -cel-content-file="$(CEL_CONTENT_FILE)" | tee .e2e-profile-test-results.out
+	set -o pipefail; PATH=$$PATH:/tmp/bin go test $(TEST_FLAGS) . -run=^TestProfileRemediations$$ -profile="$(PROFILE)" -product="$(PRODUCT)" -install-operator=$(INSTALL_OPERATOR) -install-virt=$(INSTALL_VIRT) -cel-content-file="$(CEL_CONTENT_FILE)" $(CONTENT_IMAGE_FLAG) $(LOG_DIR_FLAG) | tee .e2e-profile-test-results.out
 
 .PHONY: help
 help: ## Show this help screen

@@ -1022,6 +1022,9 @@ func GenerateAssertionFileFromResults(
 		return fmt.Errorf("failed to marshal assertion content: %w", err)
 	}
 
+	if err := os.MkdirAll(tc.LogDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create log directory %s: %w", tc.LogDir, err)
+	}
 	fullPath := path.Join(tc.LogDir, assertionFile)
 	err = os.WriteFile(fullPath, data, 0o600)
 	if err != nil {
@@ -1802,6 +1805,9 @@ func SaveMismatchesAsYAML(tc *testConfig.TestConfig, mismatchedAssertions []Asse
 	if err != nil {
 		return fmt.Errorf("failed to marshal results to YAML: %w", err)
 	}
+	if err := os.MkdirAll(tc.LogDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create log directory %s: %w", tc.LogDir, err)
+	}
 	err = os.WriteFile(p, yamlData, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write YAML file: %w", err)
@@ -1860,6 +1866,9 @@ func GenerateMismatchReport(
 	f := fmt.Sprintf("%s-report.md", bindingName)
 	p := path.Join(tc.LogDir, f)
 
+	if err := os.MkdirAll(tc.LogDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create log directory %s: %w", tc.LogDir, err)
+	}
 	err := os.WriteFile(p, []byte(report.String()), 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write markdown report: %w", err)
