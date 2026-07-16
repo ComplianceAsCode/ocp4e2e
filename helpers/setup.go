@@ -28,10 +28,8 @@ func Setup(tc *config.TestConfig) error {
 		}
 	}
 
-	if err := ensureTestProfileBundles(c, tc); err != nil {
-		return err
-	}
-
+	// At this point, operator has created ProfileBundles with custom content image
+	// (if custom image was specified, it was added to Subscription before creation)
 	if err := waitForValidTestProfileBundles(c, tc); err != nil {
 		return err
 	}

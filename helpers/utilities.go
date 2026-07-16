@@ -205,11 +205,72 @@ func ensureSubscriptionExists(c dynclient.Client, tc *testConfig.TestConfig) err
 		s = rosaSubscriptionFileName
 	}
 	p := path.Join(tc.ContentDir, resourcesPath, s)
-	err := createObject(c, p)
+
+	// Read Subscription from YAML
+	obj, err := readObjFromYAMLFilePath(p)
 	if err != nil {
-		return fmt.Errorf("failed to create subscription: %w", err)
+		return fmt.Errorf("failed to read subscription YAML: %w", err)
 	}
+
+	// Add custom content image env var if specified
+	if tc.ContentImage != testConfig.DefaultContentImage {
+		if err := addSubscriptionEnvVar(obj, "RELATED_IMAGE_PROFILE", tc.ContentImage); err != nil {
+			return fmt.Errorf("failed to add RELATED_IMAGE_PROFILE to subscription: %w", err)
+		}
+		log.Printf("Adding RELATED_IMAGE_PROFILE=%s to Subscription", tc.ContentImage)
+	}
+
+	// Create Subscription
+	err = c.Create(goctx.TODO(), obj)
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			log.Printf("Object already exists: %s/%s (%s)", obj.GetNamespace(), obj.GetName(), obj.GetKind())
+		} else {
+			return fmt.Errorf("failed to create subscription: %w", err)
+		}
+	} else {
+		log.Printf("Successfully created object: %s/%s (%s)", obj.GetNamespace(), obj.GetName(), obj.GetKind())
+	}
+
 	return nil
+}
+
+// addSubscriptionEnvVar adds or updates an environment variable in a Subscription's spec.config.env
+func addSubscriptionEnvVar(subscription *unstructured.Unstructured, name, value string) error {
+	// Get existing config.env array, or create empty array if it doesn't exist
+	configEnv, _, err := unstructured.NestedSlice(subscription.Object, "spec", "config", "env")
+	if err != nil {
+		return fmt.Errorf("failed to get config.env: %w", err)
+	}
+
+	// If config.env doesn't exist, initialize it
+	if configEnv == nil {
+		configEnv = []interface{}{}
+	}
+
+	// Check if env var already exists and update it
+	found := false
+	for i := range configEnv {
+		env := configEnv[i].(map[string]interface{})
+		if envName, _, _ := unstructured.NestedString(env, "name"); envName == name {
+			env["value"] = value
+			configEnv[i] = env
+			found = true
+			break
+		}
+	}
+
+	// Add new env var if not found
+	if !found {
+		newEnv := map[string]interface{}{
+			"name":  name,
+			"value": value,
+		}
+		configEnv = append(configEnv, newEnv)
+	}
+
+	// Set the updated config.env array back
+	return unstructured.SetNestedSlice(subscription.Object, configEnv, "spec", "config", "env")
 }
 
 func waitForOperatorToBeReady(c dynclient.Client, tc *testConfig.TestConfig) error {
@@ -239,82 +300,6 @@ func waitForOperatorToBeReady(c dynclient.Client, tc *testConfig.TestConfig) err
 	err := backoff.RetryNotify(retryFunc, bo, notifyFunc)
 	if err != nil {
 		return fmt.Errorf("operator deployment was never created: %w", err)
-	}
-	return nil
-}
-
-func ensureTestProfileBundles(c dynclient.Client, tc *testConfig.TestConfig) error {
-	// Only delete and recreate profile bundles if using a non-default
-	// content image, like ones built in CI or from a development
-	// environment.
-	if tc.ContentImage == testConfig.DefaultContentImage {
-		log.Printf("Using default content image: %s", testConfig.DefaultContentImage)
-		return nil
-	}
-
-	log.Printf("Using content image: %s", tc.ContentImage)
-	defaultBundles := []string{"ocp4", "rhcos4"}
-	for _, bundleName := range defaultBundles {
-		key := types.NamespacedName{
-			Name:      bundleName,
-			Namespace: tc.OperatorNamespace.Namespace,
-		}
-		defaultPB := &cmpv1alpha1.ProfileBundle{}
-		err := c.Get(goctx.TODO(), key, defaultPB)
-		if err == nil {
-			log.Printf("Deleting default profile bundle: %s", bundleName)
-			err = c.Delete(goctx.TODO(), defaultPB)
-			if err != nil {
-				return fmt.Errorf("failed to delete default profile bundle %s: %w", bundleName, err)
-			}
-			log.Printf("Deleted default profile bundle: %s", bundleName)
-		} else if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to check default profile bundle %s: %w", bundleName, err)
-		}
-	}
-
-	// Create profile bundles using the provided ContentImage but reusing
-	// the default profile bundle names.
-	bundles := map[string]string{
-		"ocp4":   "ocp4",
-		"rhcos4": "rhcos4",
-	}
-
-	for bundleName, product := range bundles {
-		key := types.NamespacedName{
-			Name:      bundleName,
-			Namespace: tc.OperatorNamespace.Namespace,
-		}
-		pb := &cmpv1alpha1.ProfileBundle{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      bundleName,
-				Namespace: tc.OperatorNamespace.Namespace,
-			},
-			Spec: cmpv1alpha1.ProfileBundleSpec{
-				ContentImage: tc.ContentImage,
-				ContentFile:  fmt.Sprintf("ssg-%s-ds.xml", product),
-			},
-		}
-
-		bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 180)
-		err := backoff.RetryNotify(func() error {
-			found := &cmpv1alpha1.ProfileBundle{}
-			if err := c.Get(goctx.TODO(), key, found); err != nil {
-				if apierrors.IsNotFound(err) {
-					return c.Create(goctx.TODO(), pb)
-				}
-				return err
-			}
-			// Update the spec in case it differs
-			found.Spec = pb.Spec
-			return c.Update(goctx.TODO(), found)
-		}, bo, func(err error, d time.Duration) {
-			log.Printf("Still waiting for test profile bundle %s to be created after %s: %s", bundleName, d.String(), err)
-		})
-		if err != nil {
-			return fmt.Errorf("failed to ensure test profile bundle %s exists: %w", bundleName, err)
-		}
-		log.Printf("ProfileBundle %s created successfully", bundleName)
 	}
 	return nil
 }
