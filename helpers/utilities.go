@@ -23,6 +23,7 @@ import (
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	extscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -396,15 +397,22 @@ func setPoolRollingPolicy(c dynclient.Client) error {
 	for i := range mcfgpools.Items {
 		pool := &mcfgpools.Items[i]
 
+		// Never parallelize master reboots: etcd quorum requires masters to
+		// roll one at a time.
+		if pool.Name == "master" {
+			continue
+		}
+
 		maxUnavailable := intstr.FromInt(2)
-		if pool.Spec.MaxUnavailable == &maxUnavailable {
-			log.Printf(
-				"Setting pool %s MaxUnavailable to %s for faster reboots to shorten test times",
-				pool.Name, maxUnavailable.String())
-			pool.Spec.MaxUnavailable = &maxUnavailable
-			if err := c.Update(goctx.TODO(), pool); err != nil {
-				return fmt.Errorf("error updating MachineConfigPool list MaxUnavailable: %w", err)
-			}
+		if pool.Spec.MaxUnavailable != nil && pool.Spec.MaxUnavailable.String() == maxUnavailable.String() {
+			continue
+		}
+		log.Printf(
+			"Setting pool %s MaxUnavailable to %s for faster reboots to shorten test times",
+			pool.Name, maxUnavailable.String())
+		pool.Spec.MaxUnavailable = &maxUnavailable
+		if err := c.Update(goctx.TODO(), pool); err != nil {
+			return fmt.Errorf("error updating MachineConfigPool %s MaxUnavailable: %w", pool.Name, err)
 		}
 	}
 	return nil
@@ -1458,8 +1466,15 @@ func WaitForMachineConfigPoolsUpdated(tc *testConfig.TestConfig, c dynclient.Cli
 
 	log.Printf("Waiting for %d MachineConfigPools to be fully updated", len(mcpList.Items))
 
-	// Wait for all MCPs to be updated
-	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 720) // 60 minutes max
+	// Wait for all MCPs to be updated. A full remediation run reboots every
+	// node in every pool, and the master pool always rolls serially (~10
+	// minutes per node on AWS), so the previous fixed 60-minute budget sat
+	// right at the expected duration and normal variance blew it. Use a
+	// 120-minute ceiling instead, and log per-pool progress so a stall is
+	// distinguishable from a slow-but-healthy rollout in the job output.
+	const mcpWaitBudget = 120 * time.Minute
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), uint64(mcpWaitBudget/tc.APIPollInterval))
+	lastProgress := ""
 	err = backoff.RetryNotify(func() error {
 		pendingPools := []string{}
 
@@ -1482,6 +1497,11 @@ func WaitForMachineConfigPoolsUpdated(tc *testConfig.TestConfig, c dynclient.Cli
 		}
 
 		if len(pendingPools) > 0 {
+			progress := fmt.Sprintf("%v", pendingPools)
+			if progress != lastProgress {
+				log.Printf("MachineConfigPool progress: %s", progress)
+				lastProgress = progress
+			}
 			return fmt.Errorf("%d MachineConfigPools still updating: %v", len(pendingPools), pendingPools)
 		}
 		return nil
@@ -1490,7 +1510,8 @@ func WaitForMachineConfigPoolsUpdated(tc *testConfig.TestConfig, c dynclient.Cli
 	})
 	if err != nil {
 		// On timeout, provide detailed information about pending pools
-		log.Printf("Timeout reached after 60 minutes waiting for MachineConfigPools")
+		log.Printf("Timeout reached after %s waiting for MachineConfigPools", mcpWaitBudget)
+		dumpMachineConfigNodeStates(c)
 
 		pendingPools := []string{}
 		for i := range mcpList.Items {
@@ -1531,6 +1552,27 @@ func isMachineConfigPoolUpdated(mcp *mcfgv1.MachineConfigPool) bool {
 	return mcp.Status.UpdatedMachineCount == mcp.Status.MachineCount &&
 		mcp.Status.UnavailableMachineCount == 0 &&
 		mcp.Status.DegradedMachineCount == 0
+}
+
+// dumpMachineConfigNodeStates logs each node's machine-config daemon state
+// annotations so a stuck MCP rollout is diagnosable from the job output
+// (drain hang vs reboot hang vs degraded daemon).
+func dumpMachineConfigNodeStates(c dynclient.Client) {
+	nodes := &corev1.NodeList{}
+	if err := c.List(goctx.TODO(), nodes); err != nil {
+		log.Printf("could not list nodes for MCP diagnostics: %s", err)
+		return
+	}
+	for i := range nodes.Items {
+		node := &nodes.Items[i]
+		ann := node.Annotations
+		log.Printf("   NODE %s: state=%s reason=%q current=%s desired=%s",
+			node.Name,
+			ann["machineconfiguration.openshift.io/state"],
+			ann["machineconfiguration.openshift.io/reason"],
+			ann["machineconfiguration.openshift.io/currentConfig"],
+			ann["machineconfiguration.openshift.io/desiredConfig"])
+	}
 }
 
 // getBoolString converts a boolean to a string for logging.
