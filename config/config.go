@@ -31,6 +31,14 @@ type TestConfig struct {
 	OperatorNamespace        types.NamespacedName
 	Version                  string
 	ManualRemediationTimeout time.Duration
+	// InstallVirt, when true, makes the suite install the OpenShift
+	// Virtualization (CNV) operator and HyperConverged CR during setup so
+	// the OCP-Virt profiles can be scanned on a cluster without CNV.
+	InstallVirt bool
+	// CELContentFile is the path (inside the content image) to the CEL
+	// content YAML. When set, a CEL ProfileBundle is created so CEL profiles
+	// (e.g. the CIS OpenShift Virtualization benchmark) are parsed.
+	CELContentFile string
 }
 
 var (
@@ -44,6 +52,8 @@ var (
 	bypassRemediations       bool
 	testType                 string
 	manualRemediationTimeout time.Duration
+	installVirt              bool
+	celContentFile           string
 )
 
 // NewTestConfig creates a new TestConfig from the parsed flags and sets the
@@ -75,6 +85,8 @@ func NewTestConfig() *TestConfig {
 		OperatorNamespace:        types.NamespacedName{Name: "compliance-operator", Namespace: "openshift-compliance"},
 		Version:                  version,
 		ManualRemediationTimeout: manualRemediationTimeout,
+		InstallVirt:              installVirt,
+		CELContentFile:           celContentFile,
 	}
 }
 
@@ -94,6 +106,12 @@ func DefineFlags() {
 	flag.StringVar(&testType, "test-type", "all", "Type of rules to test: 'platform', 'node', or 'all' (default)")
 	flag.DurationVar(&manualRemediationTimeout,
 		"manual-remediation-timeout", 30*time.Minute, "Timeout for manual remediation scripts")
+	flag.BoolVar(&installVirt, "install-virt", false,
+		"Install the OpenShift Virtualization (CNV) operator and HyperConverged CR during setup. "+
+			"Use when testing the OCP-Virt profiles on a cluster that does not already have CNV.")
+	flag.StringVar(&celContentFile, "cel-content-file", "",
+		"Path (inside the content image) to the CEL content YAML. When set, a CEL ProfileBundle "+
+			"is created so CEL profiles (e.g. the CIS OpenShift Virtualization benchmark) are parsed.")
 }
 
 // ValidateFlags checks that required flags are provided.
