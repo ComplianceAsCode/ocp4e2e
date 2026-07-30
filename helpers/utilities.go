@@ -1783,6 +1783,119 @@ func CreateResultMap(_ *testConfig.TestConfig, c dynclient.Client, suiteName str
 	return resultMap, nil
 }
 
+// CheckRulesForInstructions checks that all compliance check results have instructions.
+// Compliance check results in the exception list are skipped from the instruction check.
+func CheckRulesForInstructions(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
+	exceptionList := map[string]bool{	
+		"platform-acs-sensor-exists": true,
+		"platform-cluster-wide-proxy-set": true,
+		"platform-rbac-cluster-roles-defined": true, 
+		"platform-rbac-roles-defined": true,
+		"rhcos-node-master-audit-privileged-commands-init": true,
+		"rhcos-node-master-audit-privileged-commands-poweroff": true,
+		"rhcos-node-master-audit-privileged-commands-reboot": true,
+		"rhcos-node-master-audit-privileged-commands-shutdown": true,
+		"rhcos-node-master-audit-rules-login-events": true,
+		"rhcos-node-master-audit-rules-session-events": true,
+		"rhcos-node-master-bios-disable-usb-boot": true,
+		"rhcos-node-master-chronyd-or-ntpd-specify-multiple-servers": true,
+		"rhcos-node-master-coreos-nousb-kernel-argument": true,
+		"rhcos-node-master-disable-prelink": true,
+		"rhcos-node-master-file-permissions-sudo": true,
+		"rhcos-node-master-grub2-enable-apparmor": true,
+		"rhcos-node-master-grub2-nousb-argument": true,
+		"rhcos-node-master-kernel-module-freevxfs-disabled": true,
+		"rhcos-node-master-kernel-module-hfs-disabled": true,
+		"rhcos-node-master-kernel-module-hfsplus-disabled": true,
+		"rhcos-node-master-kernel-module-jffs2-disabled": true,
+		"rhcos-node-master-kernel-module-squashfs-disabled": true,
+		"rhcos-node-master-kernel-module-udf-disabled": true,
+		"rhcos-node-master-kernel-module-vfat-disabled": true,
+		"rhcos-node-master-ntpd-specify-multiple-servers": true,
+		"rhcos-node-master-package-apparmor-installed": true,
+		"rhcos-node-master-package-inetutils-telnetd-removed": true,
+		"rhcos-node-master-package-nis-removed": true,
+		"rhcos-node-master-package-ntpdate-removed": true,
+		"rhcos-node-master-package-telnetd-removed": true,
+		"rhcos-node-master-package-telnetd-ssl-removed": true,
+		"rhcos-node-master-root-path-no-dot": true,
+		"rhcos-node-master-service-netfs-disabled": true,
+		"rhcos-node-master-wireless-disable-in-bios": true,
+		"rhcos-node-worker-audit-privileged-commands-init": true,
+		"rhcos-node-worker-audit-privileged-commands-poweroff": true,
+		"rhcos-node-worker-audit-privileged-commands-reboot": true,
+		"rhcos-node-worker-audit-privileged-commands-shutdown": true,
+		"rhcos-node-worker-audit-rules-login-events": true,
+		"rhcos-node-worker-audit-rules-session-events": true,
+		"rhcos-node-worker-bios-disable-usb-boot": true,
+		"rhcos-node-worker-chronyd-or-ntpd-specify-multiple-servers": true,
+		"rhcos-node-worker-coreos-nousb-kernel-argument": true,
+		"rhcos-node-worker-disable-prelink": true,
+		"rhcos-node-worker-file-permissions-sudo": true,
+		"rhcos-node-worker-grub2-enable-apparmor": true,
+		"rhcos-node-worker-grub2-nousb-argument": true,
+		"rhcos-node-worker-kernel-module-freevxfs-disabled": true,
+		"rhcos-node-worker-kernel-module-hfs-disabled": true,
+		"rhcos-node-worker-kernel-module-hfsplus-disabled": true,
+		"rhcos-node-worker-kernel-module-jffs2-disabled": true,
+		"rhcos-node-worker-kernel-module-squashfs-disabled": true,
+		"rhcos-node-worker-kernel-module-udf-disabled": true,
+		"rhcos-node-worker-kernel-module-vfat-disabled": true,
+		"rhcos-node-worker-ntpd-specify-multiple-servers": true,
+		"rhcos-node-worker-package-apparmor-installed": true,
+		"rhcos-node-worker-package-inetutils-telnetd-removed": true,
+		"rhcos-node-worker-package-nis-removed": true,
+		"rhcos-node-worker-package-ntpdate-removed": true,
+		"rhcos-node-worker-package-telnetd-removed": true,
+		"rhcos-node-worker-package-telnetd-ssl-removed": true,
+		"rhcos-node-worker-root-path-no-dot": true,
+		"rhcos-node-worker-service-netfs-disabled": true,
+		"rhcos-node-worker-wireless-disable-in-bios": true,
+	}
+
+	labelSelector, err := labels.Parse(cmpv1alpha1.SuiteLabel + "=" + suiteName)
+	if err != nil {
+		return fmt.Errorf("failed to parse label selector: %w", err)
+	}
+
+	resultList := &cmpv1alpha1.ComplianceCheckResultList{}
+	opts := &dynclient.ListOptions{
+		LabelSelector: labelSelector,
+		Namespace:     tc.OperatorNamespace.Namespace,
+	}
+	err = c.List(goctx.TODO(), resultList, opts)
+	if err != nil {
+		return fmt.Errorf("failed to get compliance check results for suite %s: %w", suiteName, err)
+	}
+
+	if len(resultList.Items) == 0 {
+		log.Printf("No compliance check results found for suite %s", suiteName)
+		return nil
+	}
+
+	// Check each result for instructions
+	var missingInstructions []string
+	for i := range resultList.Items {
+		result := &resultList.Items[i]
+		
+		if exceptionList[result.Name] {
+			continue
+		}
+
+		if result.Instructions == "" {
+			missingInstructions = append(missingInstructions, result.Name)
+			log.Printf("Compliance check result '%s' does not have instructions", result.Name)
+		}
+	}
+
+	if len(missingInstructions) > 0 {
+		return fmt.Errorf("found %d compliance check result(s) without instructions for suite %s: %v",
+			len(missingInstructions), suiteName, missingInstructions)
+	}
+
+	return nil
+}
+
 // SaveResultAsYAML saves YAML data about the scan results to a file in the configured log directory.
 func SaveResultAsYAML(tc *testConfig.TestConfig, results map[string]string, filename string) error {
 	p := path.Join(tc.LogDir, filename)

@@ -146,6 +146,11 @@ func TestPlatformCompliance(t *testing.T) {
 	}
 	afterRemediation = true
 
+	err = helpers.CheckRulesForInstructions(tc, c, platformBindingName)
+	if err != nil {
+		t.Fatalf("Failed to check rules for instructions: %s", err)
+	}
+
 	finalResults, err := helpers.CreateResultMap(tc, c, platformBindingName)
 	if err != nil {
 		t.Fatalf("Failed to create result map: %s", err)
@@ -258,6 +263,11 @@ func TestNodeCompliance(t *testing.T) {
 		t.Fatalf("Failed to apply node remediations: %s", err)
 	}
 	afterRemediation = true
+
+	err = helpers.CheckRulesForInstructions(tc, c, nodeBindingName)
+	if err != nil {
+		t.Fatalf("Failed to check rules for instructions: %s", err)
+	}
 
 	finalResults, err := helpers.CreateResultMap(tc, c, nodeBindingName)
 	if err != nil {
