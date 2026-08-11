@@ -1495,7 +1495,9 @@ func WaitForMachineConfigPoolsUpdated(tc *testConfig.TestConfig, c dynclient.Cli
 	log.Printf("Waiting for %d MachineConfigPools to be fully updated", len(mcpList.Items))
 
 	// Wait for all MCPs to be updated
-	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 720) // 60 minutes max
+	// Increased from 720 (60 minutes) to 1440 (120 minutes) to handle namespace exhaustion
+	// issues when applying large numbers of node remediations
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 1440) // 120 minutes max
 	err = backoff.RetryNotify(func() error {
 		pendingPools := []string{}
 
@@ -1526,7 +1528,7 @@ func WaitForMachineConfigPoolsUpdated(tc *testConfig.TestConfig, c dynclient.Cli
 	})
 	if err != nil {
 		// On timeout, provide detailed information about pending pools
-		log.Printf("Timeout reached after 60 minutes waiting for MachineConfigPools")
+		log.Printf("Timeout reached after 120 minutes waiting for MachineConfigPools")
 
 		pendingPools := []string{}
 		for i := range mcpList.Items {
