@@ -308,14 +308,15 @@ func waitForOperatorToBeReady(c dynclient.Client, tc *testConfig.TestConfig) err
 // ProfileBundle so CEL profiles (e.g. the CIS OpenShift Virtualization
 // benchmark) are parsed alongside the XCCDF datastream. The ProfileBundle is
 // created by the operator, so retry until it exists.
-func ensureCELContentFile(c dynclient.Client, tc *testConfig.TestConfig) error {
+func ensureCELContentFile(c dynclient.Client, tc *testConfig.TestConfig) (string, error) {
 	if tc.CELContentFile == "" {
-		return nil
+		return "", nil
 	}
 	key := types.NamespacedName{
 		Name:      "ocp4",
 		Namespace: tc.OperatorNamespace.Namespace,
 	}
+	var postUpdateRV string
 	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 180)
 	err := backoff.RetryNotify(func() error {
 		pb := &cmpv1alpha1.ProfileBundle{}
@@ -326,18 +327,22 @@ func ensureCELContentFile(c dynclient.Client, tc *testConfig.TestConfig) error {
 			return nil
 		}
 		pb.Spec.CELContentFile = tc.CELContentFile
-		return c.Update(goctx.TODO(), pb)
+		if err := c.Update(goctx.TODO(), pb); err != nil {
+			return err
+		}
+		postUpdateRV = pb.ResourceVersion
+		return nil
 	}, bo, func(err error, d time.Duration) {
 		log.Printf("Still waiting to set celContentFile on ProfileBundle ocp4 after %s: %s", d.String(), err)
 	})
 	if err != nil {
-		return fmt.Errorf("failed to set celContentFile on ProfileBundle ocp4: %w", err)
+		return "", fmt.Errorf("failed to set celContentFile on ProfileBundle ocp4: %w", err)
 	}
 	log.Printf("ProfileBundle ocp4 celContentFile set to %s", tc.CELContentFile)
-	return nil
+	return postUpdateRV, nil
 }
 
-func waitForValidTestProfileBundles(c dynclient.Client, tc *testConfig.TestConfig) error {
+func waitForValidTestProfileBundles(c dynclient.Client, tc *testConfig.TestConfig, postCELUpdateRV string) error {
 	bundleNames := []string{"ocp4", "rhcos4"}
 
 	for _, bundleName := range bundleNames {
@@ -354,6 +359,12 @@ func waitForValidTestProfileBundles(c dynclient.Client, tc *testConfig.TestConfi
 			}
 			if found.Status.DataStreamStatus != cmpv1alpha1.DataStreamValid {
 				return fmt.Errorf("%s ProfileBundle is in %s state", found.Name, found.Status.DataStreamStatus)
+			}
+			if bundleName == "ocp4" && postCELUpdateRV != "" &&
+				found.ResourceVersion == postCELUpdateRV {
+				return fmt.Errorf(
+					"%s ProfileBundle status is stale, waiting for re-parse",
+					found.Name)
 			}
 			return nil
 		}, bo, func(err error, _ time.Duration) {

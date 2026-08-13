@@ -36,11 +36,12 @@ func Setup(tc *config.TestConfig) error {
 
 	// At this point, operator has created ProfileBundles with custom content image
 	// (if custom image was specified, it was added to Subscription before creation)
-	if err := ensureCELContentFile(c, tc); err != nil {
+	postCELUpdateRV, err := ensureCELContentFile(c, tc)
+	if err != nil {
 		return err
 	}
 
-	if err := waitForValidTestProfileBundles(c, tc); err != nil {
+	if err := waitForValidTestProfileBundles(c, tc, postCELUpdateRV); err != nil {
 		return err
 	}
 
