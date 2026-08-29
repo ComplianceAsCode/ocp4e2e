@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"strings"
 	"testing"
 	"time"
 
@@ -496,4 +497,150 @@ func TestProfileRemediations(t *testing.T) {
 	if err != nil {
 		t.Logf("Warning: Failed to wait for scan cleanup for binding %s: %s", bindingName, err)
 	}
+}
+
+// TestRosaNodeProfilesWithoutPlatformEnv tests that the Compliance Operator works
+// correctly on ROSA HCP clusters when installed WITHOUT the PLATFORM environment
+// variable set in the subscription.
+func TestRosaNodeProfilesWithoutPlatformEnv(t *testing.T) {
+	// Skip if not running on ROSA platform
+	if tc.Platform != "rosa" {
+		t.Skipf("Skipping ROSA-specific test: -platform is %s", tc.Platform)
+	}
+
+	c, err := helpers.GenerateKubeConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate kube config: %s", err)
+	}
+
+	bindingName := "rosa-node-profiles-test"
+
+	// Cleanup function
+	defer func() {
+		t.Log("Cleaning up test resources")
+		err := helpers.DeleteScanBinding(tc, c, bindingName)
+		if err != nil {
+			t.Logf("Warning: Failed to delete scan binding: %s", err)
+		}
+		err = helpers.WaitForScanCleanup(tc, c, bindingName)
+		if err != nil {
+			t.Logf("Warning: Failed to wait for scan cleanup: %s", err)
+		}
+	}()
+
+	// Step 1: Verify subscription does NOT have PLATFORM env variable
+	t.Log("Verifying subscription has no PLATFORM environment variable set")
+	hasPlatformEnv, err := helpers.SubscriptionHasPlatformEnv(tc, c)
+	if err != nil {
+		t.Fatalf("Failed to check subscription config: %s", err)
+	}
+	if hasPlatformEnv {
+		t.Fatal("Subscription has PLATFORM env variable set, but it should not be set for this test")
+	}
+	t.Log("✓ Subscription has no PLATFORM env variable (as expected)")
+
+	// Step 2: Verify ProfileBundles are VALID
+	t.Log("Verifying ProfileBundles are VALID")
+	err = helpers.VerifyProfileBundleStatus(tc, c, "ocp4", "VALID")
+	if err != nil {
+		t.Fatalf("Failed to verify ocp4 ProfileBundle: %s", err)
+	}
+	err = helpers.VerifyProfileBundleStatus(tc, c, "rhcos4", "VALID")
+	if err != nil {
+		t.Fatalf("Failed to verify rhcos4 ProfileBundle: %s", err)
+	}
+	t.Log("✓ ProfileBundles (ocp4, rhcos4) are VALID")
+
+	// Step 3: Verify node profiles exist
+	t.Log("Verifying node profiles are available")
+	nodeProfiles := []string{
+		"ocp4-cis-node",
+		"ocp4-pci-dss-node",
+		"ocp4-high-node",
+		"ocp4-moderate-node",
+		"ocp4-nerc-cip-node",
+		"ocp4-stig-node",
+		"rhcos4-e8",
+		"rhcos4-high",
+		"rhcos4-moderate",
+		"rhcos4-nerc-cip",
+		"rhcos4-stig",
+	}
+	for _, profileName := range nodeProfiles {
+		err := helpers.ValidateProfile(tc, c, profileName)
+		if err != nil {
+			t.Fatalf("Expected node profile %s to exist, but got error: %s", profileName, err)
+		}
+	}
+	t.Logf("Verified %d node profiles exist", len(nodeProfiles))
+
+	// Step 4: Verify platform profile ocp4-cis does NOT exist
+	t.Log("Verifying platform profile ocp4-cis does NOT exist")
+	err = helpers.ValidateProfile(tc, c, "ocp4-cis")
+	if err == nil {
+		t.Fatal("Platform profile ocp4-cis should NOT exist on ROSA without PLATFORM env, but it was found")
+	}
+	t.Log("Platform profile ocp4-cis does not exist (as expected)")
+
+	// Step 5: Create ScanSettingBinding with two node profiles
+	t.Log("Creating ScanSettingBinding with ocp4-cis-node and ocp4-pci-dss-node profiles")
+	err = helpers.CreateRosaNodeScanBinding(tc, c, bindingName, "ocp4-cis-node", "ocp4-pci-dss-node")
+	if err != nil {
+		t.Fatalf("Failed to create scan binding: %s", err)
+	}
+	t.Log("Created ScanSettingBinding")
+
+	// Step 6: Wait for ComplianceSuite to complete
+	t.Log("Waiting for ComplianceSuite to complete")
+	err = helpers.WaitForComplianceSuite(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for compliance suite: %s", err)
+	}
+	t.Log("ComplianceSuite completed")
+
+	// Step 7: Get scan results
+	t.Log("Retrieving scan results")
+	results, err := helpers.CreateResultMap(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to create result map: %s", err)
+	}
+
+	// Save results for debugging
+	err = helpers.SaveResultAsYAML(tc, results, "rosa-node-profiles-test-results.yaml")
+	if err != nil {
+		t.Logf("Warning: Failed to save test results: %s", err)
+	}
+
+	// Step 8: Verify we got scan results
+	// We expect NON-COMPLIANT results on a fresh cluster, but the main point
+	// is that the scan completed successfully
+	if len(results) == 0 {
+		t.Fatal("No scan results found - scan may not have executed properly")
+	}
+	t.Logf("Scan completed with %d check results", len(results))
+
+	// Verify that at least some checks were from the node profiles
+	foundCisNodeCheck := false
+	foundPciNodeCheck := false
+	for checkName := range results {
+		if strings.Contains(checkName, "ocp4-cis-node") {
+			foundCisNodeCheck = true
+		}
+		if strings.Contains(checkName, "ocp4-pci-dss-node") {
+			foundPciNodeCheck = true
+		}
+	}
+
+	if !foundCisNodeCheck {
+		t.Error("Expected to find check results from ocp4-cis-node profile")
+	}
+	if !foundPciNodeCheck {
+		t.Error("Expected to find check results from ocp4-pci-dss-node profile")
+	}
+
+	if !foundCisNodeCheck || !foundPciNodeCheck {
+		t.Fatal("Not all expected profiles were scanned")
+	}
+
+	t.Log("ROSA node profile test passed successfully when Compliance Operator installed without PLATFORM env variable")
 }

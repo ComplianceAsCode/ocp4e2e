@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
@@ -1929,4 +1930,149 @@ func convertMarkdownToHTML(markdown string) string {
 %s
 </body>
 </html>`, html)
+}
+
+// SubscriptionHasPlatformEnv checks if the Compliance Operator subscription
+// has the PLATFORM environment variable configured in .spec.config.env
+func SubscriptionHasPlatformEnv(tc *testConfig.TestConfig, c dynclient.Client) (bool, error) {
+	sub := &unstructured.Unstructured{}
+	sub.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "operators.coreos.com",
+		Version: "v1alpha1",
+		Kind:    "Subscription",
+	})
+
+	// Try common subscription names (web console uses "compliance-operator", test framework uses "compliance-operator-sub")
+	subscriptionNames := []string{"compliance-operator", "compliance-operator-sub"}
+	var lastErr error
+
+	for _, name := range subscriptionNames {
+		err := c.Get(goctx.TODO(), dynclient.ObjectKey{
+			Name:      name,
+			Namespace: tc.OperatorNamespace.Namespace,
+		}, sub)
+		if err == nil {
+			break // Found the subscription
+		}
+		lastErr = err
+	}
+
+	if lastErr != nil && sub.GetName() == "" {
+		return false, fmt.Errorf("failed to get subscription (tried: %v): %w", subscriptionNames, lastErr)
+	}
+
+	// Check if .spec.config.env exists
+	envVars, found, err := unstructured.NestedSlice(sub.Object, "spec", "config", "env")
+	if err != nil {
+		return false, fmt.Errorf("failed to get env from subscription: %w", err)
+	}
+
+	if !found || envVars == nil || len(envVars) == 0 {
+		// No env variables configured
+		return false, nil
+	}
+
+	// Check if any env variable has name="PLATFORM"
+	for _, envVar := range envVars {
+		envMap, ok := envVar.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, found, err := unstructured.NestedString(envMap, "name")
+		if err != nil {
+			continue
+		}
+		if found && name == "PLATFORM" {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// VerifyProfileBundleStatus checks that a ProfileBundle exists and has the expected status
+func VerifyProfileBundleStatus(tc *testConfig.TestConfig, c dynclient.Client, bundleName, expectedStatus string) error {
+	pb := &cmpv1alpha1.ProfileBundle{}
+	err := c.Get(goctx.TODO(), dynclient.ObjectKey{
+		Name:      bundleName,
+		Namespace: tc.OperatorNamespace.Namespace,
+	}, pb)
+	if err != nil {
+		return fmt.Errorf("failed to get ProfileBundle %s: %w", bundleName, err)
+	}
+
+	if string(pb.Status.DataStreamStatus) != expectedStatus {
+		return fmt.Errorf("ProfileBundle %s has status %s, expected %s",
+			bundleName, pb.Status.DataStreamStatus, expectedStatus)
+	}
+
+	log.Printf("ProfileBundle %s has status %s", bundleName, expectedStatus)
+	return nil
+}
+
+// CreateRosaNodeScanBinding creates a ScanSettingBinding for ROSA node profile testing
+// with two specified node profiles
+func CreateRosaNodeScanBinding(tc *testConfig.TestConfig, c dynclient.Client,
+	bindingName, profile1, profile2 string) error {
+	binding := &cmpv1alpha1.ScanSettingBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      bindingName,
+			Namespace: tc.OperatorNamespace.Namespace,
+		},
+		SettingsRef: &cmpv1alpha1.NamedObjectReference{
+			APIGroup: "compliance.openshift.io/v1alpha1",
+			Kind:     "ScanSetting",
+			Name:     "default",
+		},
+		Profiles: []cmpv1alpha1.NamedObjectReference{
+			{
+				APIGroup: "compliance.openshift.io/v1alpha1",
+				Kind:     "Profile",
+				Name:     profile1,
+			},
+			{
+				APIGroup: "compliance.openshift.io/v1alpha1",
+				Kind:     "Profile",
+				Name:     profile2,
+			},
+		},
+	}
+
+	// Check if the binding already exists and delete it if it does
+	existingBinding := &cmpv1alpha1.ScanSettingBinding{}
+	err := c.Get(goctx.TODO(), dynclient.ObjectKey{
+		Name:      bindingName,
+		Namespace: tc.OperatorNamespace.Namespace,
+	}, existingBinding)
+
+	if err == nil {
+		// Binding exists, delete it first
+		log.Printf("Deleting existing ScanSettingBinding %s to trigger new scan\n", bindingName)
+		err = c.Delete(goctx.TODO(), existingBinding)
+		if err != nil {
+			return fmt.Errorf("failed to delete existing %s scan binding: %w", bindingName, err)
+		}
+
+		// Wait for ComplianceSuite and ComplianceCheckResults to be cleaned up
+		err = waitForScanCleanup(c, tc, bindingName)
+		if err != nil {
+			return fmt.Errorf("failed to wait for scan cleanup after deleting %s: %w", bindingName, err)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		// If error is not "not found", return the error
+		return fmt.Errorf("failed to check if %s scan binding exists: %w", bindingName, err)
+	}
+
+	// Create the new binding
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 180)
+	err = backoff.RetryNotify(func() error {
+		return c.Create(goctx.TODO(), binding)
+	}, bo, func(err error, d time.Duration) {
+		fmt.Printf("Couldn't create %s binding after %s: %s\n", bindingName, d.String(), err)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create %s scan binding: %w", bindingName, err)
+	}
+	log.Printf("Created new ScanSettingBinding %s with profiles: %s, %s\n", bindingName, profile1, profile2)
+	return nil
 }
