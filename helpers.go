@@ -1,5 +1,17 @@
 package ocp4e2e
 
+import (
+	"context"
+	"strings"
+
+	cmpv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
+	"github.com/ComplianceAsCode/ocp4e2e/config"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	dynclient "sigs.k8s.io/controller-runtime/pkg/client"
+)
+
 // RuleTest is the definition of the structure rule-specific e2e tests should have.
 type RuleTest struct {
 	DefaultResult          interface{} `yaml:"default_result"`
@@ -13,3 +25,114 @@ type RuleTestResults struct {
 
 func init() {
 }
+
+// createTailoredProfileWithExemptions creates a TailoredProfile for namespace exemption testing.
+func createTailoredProfileWithExemptions(tc *config.TestConfig, c dynclient.Client, name, exemptionPattern string) error {
+	tp := &cmpv1alpha1.TailoredProfile{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: tc.OperatorNamespace.Namespace,
+			Annotations: map[string]string{"compliance.openshift.io/product-type": "Platform"},
+		},
+		Spec: cmpv1alpha1.TailoredProfileSpec{
+			Title: "Namespace Exemption Test Profile",
+			Description: "Test profile for validating namespace exemption variables",
+			EnableRules: []cmpv1alpha1.RuleReferenceSpec{
+				{Name: "ocp4-resource-requests-limits-in-daemonset"},
+				{Name: "ocp4-resource-requests-limits-in-deployment"},
+				{Name: "ocp4-resource-requests-limits-in-statefulset"},
+			},
+			SetValues: []cmpv1alpha1.VariableValueSpec{
+				{Name: "ocp4-var-daemonset-limit-namespaces-exempt-regex", Value: exemptionPattern},
+				{Name: "ocp4-var-deployment-limit-namespaces-exempt-regex", Value: exemptionPattern},
+				{Name: "ocp4-var-statefulset-limit-namespaces-exempt-regex", Value: exemptionPattern},
+			},
+		},
+	}
+	return c.Create(context.TODO(), tp)
+}
+
+// createTestWorkloadsWithoutLimits creates test workloads without resource limits.
+func createTestWorkloadsWithoutLimits(c dynclient.Client, namespace string) error {
+	ctx := context.TODO()
+
+	workloads := []dynclient.Object{
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-deployment-no-limits", Namespace: namespace},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: int32Ptr(1),
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "test"}},
+					Spec: corev1.PodSpec{Containers: []corev1.Container{{
+						Name: "nginx", Image: "registry.access.redhat.com/ubi8/ubi-minimal:latest",
+						Command: []string{"/bin/sh", "-c", "sleep infinity"},
+					}}},
+				},
+			},
+		},
+		&appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-daemonset-no-limits", Namespace: namespace},
+			Spec: appsv1.DaemonSetSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "test"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{
+							Name: "nginx", Image: "registry.access.redhat.com/ubi8/ubi-minimal:latest",
+							Command: []string{"/bin/sh", "-c", "sleep infinity"},
+						}},
+						Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
+					},
+				},
+			},
+		},
+		&appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-statefulset-no-limits", Namespace: namespace},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: int32Ptr(1), ServiceName: "test",
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "test"}},
+					Spec: corev1.PodSpec{Containers: []corev1.Container{{
+						Name: "nginx", Image: "registry.access.redhat.com/ubi8/ubi-minimal:latest",
+						Command: []string{"/bin/sh", "-c", "sleep infinity"},
+					}}},
+				},
+			},
+		},
+	}
+
+	for _, w := range workloads {
+		if err := c.Create(ctx, w); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// createNamespace creates a namespace.
+func createNamespace(c dynclient.Client, name string) error {
+	return c.Create(context.TODO(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}})
+}
+
+// deleteNamespace deletes a namespace.
+func deleteNamespace(c dynclient.Client, name string) error {
+	c.Delete(context.TODO(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}})
+	return nil
+}
+
+// findRuleResult searches for a rule result by partial name match.
+func findRuleResult(results map[string]string, ruleName string) string {
+	if result, exists := results[ruleName]; exists {
+		return result
+	}
+	for resultName, resultValue := range results {
+		if strings.Contains(resultName, ruleName) {
+			return resultValue
+		}
+	}
+	return ""
+}
+
+// int32Ptr returns a pointer to an int32 value.
+func int32Ptr(i int32) *int32 { return &i }
