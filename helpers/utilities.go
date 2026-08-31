@@ -1147,11 +1147,16 @@ func getRuleNameFromResultName(
 
 func convertRuleNameToRegex(ruleName string) string {
 	// Escape any special regex characters in the rule name
-	escaped := regexp.QuoteMeta(ruleName)
-	// Replace literal \- and \_ with a character class that matches both - and _
-	pattern := strings.ReplaceAll(escaped, `\-`, `[-_]`)
-	pattern = strings.ReplaceAll(pattern, `\_`, `[-_]`)
-	return pattern
+	pattern := ""
+    for _, char := range ruleName {
+    	if char == '-' || char == '_' {
+    		pattern += `[-_]`
+    	} else {
+    		// Escape this individual character if it's a regex metacharacter
+    		pattern += regexp.QuoteMeta(string(char))
+    	}
+    }
+    return pattern
 }
 
 func findRulePath(tc *testConfig.TestConfig, rulePattern string) (rulePath string, found bool) {
