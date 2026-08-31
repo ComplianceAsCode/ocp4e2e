@@ -29,6 +29,13 @@ GOLANGCI_LINT_VERSION=latest
 BUILD_DIR := build
 PLATFORM?=ocp
 
+GO=go
+TEST_OPTIONS?=-timeout=20m
+# Packages that actually have test files, excluding vendored code and the
+# root package (github.com/ComplianceAsCode/ocp4e2e), whose *_test.go files are
+# the cluster-backed e2e suite and cannot run without a live OpenShift cluster.
+TESTABLE_PKGS=$(shell $(GO) list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v -E '/vendor/' | grep -v -E '^github.com/ComplianceAsCode/ocp4e2e$$')
+
 .PHONY: all
 all: e2e
 
@@ -59,6 +66,10 @@ help: ## Show this help screen
 	@echo ''
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z0-9_-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
+
+.PHONY: test-unit
+test-unit: ## Run the unit tests (no cluster required)
+	$(GO) test $(TEST_OPTIONS) -cover $(TESTABLE_PKGS)
 
 .PHONY: verify
 verify: verify-go-lint ## Run all verification targets
