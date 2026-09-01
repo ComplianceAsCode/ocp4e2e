@@ -510,6 +510,39 @@ func createTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client, name s
 		return err
 	}
 	log.Printf("Created %s tailored profile with %d rules", name, len(rules))
+
+	// Wait for the profile to be rendered before returning. The operator's
+	// ScanSettingBinding controller can fail to generate a ComplianceSuite if it
+	// reconciles a binding whose referenced TailoredProfile has not reached READY
+	// yet, so callers must not create the binding before the profile is ready.
+	return waitForTailoredProfileReady(c, tc, name)
+}
+
+// waitForTailoredProfileReady blocks until the named TailoredProfile reports the
+// READY state, failing fast if it lands in ERROR.
+func waitForTailoredProfileReady(c dynclient.Client, tc *testConfig.TestConfig, name string) error {
+	key := types.NamespacedName{Name: name, Namespace: tc.OperatorNamespace.Namespace}
+	tp := &cmpv1alpha1.TailoredProfile{}
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 180)
+	err := backoff.RetryNotify(func() error {
+		if err := c.Get(goctx.TODO(), key, tp); err != nil {
+			return err
+		}
+		if tp.Status.State == cmpv1alpha1.TailoredProfileStateReady {
+			return nil
+		}
+		if tp.Status.State == cmpv1alpha1.TailoredProfileStateError {
+			return backoff.Permanent(
+				fmt.Errorf("TailoredProfile %s is in ERROR state: %s", name, tp.Status.ErrorMessage))
+		}
+		return fmt.Errorf("TailoredProfile %s is not READY yet (state: %q)", name, tp.Status.State)
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("Waiting for TailoredProfile %s to be READY after %s: %s", name, d.String(), err)
+	})
+	if err != nil {
+		return fmt.Errorf("failed waiting for TailoredProfile %s to be READY: %w", name, err)
+	}
+	log.Printf("TailoredProfile %s is READY", name)
 	return nil
 }
 
