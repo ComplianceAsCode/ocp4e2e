@@ -1013,9 +1013,9 @@ func GenerateAssertionFileFromResults(
 	assertions := &RuleTestResults{
 		RuleResults: make(map[string]RuleTest),
 	}
-	ruleTest := RuleTest{}
 	afterRemediation := finalResults != nil
 	for ruleName, initialResult := range initialResults {
+		ruleTest := RuleTest{}
 		ruleTest.DefaultResult = initialResult
 
 		if afterRemediation {
