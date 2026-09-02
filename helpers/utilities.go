@@ -587,7 +587,9 @@ func CreateNodeTailoredProfile(tc *testConfig.TestConfig, c dynclient.Client) er
 	return nil
 }
 
-// findPlatformRules finds all Rule custom resources of type Platform and returns them.
+// findPlatformRules finds all OpenSCAP Rule custom resources of type Platform
+// and returns them. CEL-typed rules are excluded because a TailoredProfile
+// cannot mix CEL-typed rules with OpenSCAP rules.
 func findPlatformRules(c dynclient.Client, tc *testConfig.TestConfig) ([]cmpv1alpha1.Rule, error) {
 	ruleList := &cmpv1alpha1.RuleList{}
 	err := c.List(goctx.TODO(), ruleList)
@@ -601,7 +603,8 @@ func findPlatformRules(c dynclient.Client, tc *testConfig.TestConfig) ([]cmpv1al
 		// Only include rules from the e2e profile bundle
 		bundleName, exists := ruleList.Items[i].Labels["compliance.openshift.io/profile-bundle"]
 		if exists && bundleName == "ocp4" {
-			if ruleList.Items[i].CheckType == cmpv1alpha1.CheckTypePlatform {
+			if ruleList.Items[i].CheckType == cmpv1alpha1.CheckTypePlatform &&
+				ruleList.Items[i].ScannerType != cmpv1alpha1.ScannerTypeCEL {
 				platformRules = append(platformRules, ruleList.Items[i])
 			}
 		}
