@@ -1246,8 +1246,19 @@ func ApplyRemediationsWithDependencies(tc *testConfig.TestConfig, c dynclient.Cl
 		iteration++
 		log.Printf("Starting remediation iteration %d for suite %s", iteration, suiteName)
 
+		// Snapshot the MachineConfigPool generations *before* this wave's
+		// remediations are applied. WaitForMachineConfigPoolsUpdated uses this
+		// baseline to tell "already converged from the previous rollout" apart
+		// from "the MCO has not yet reacted to the MachineConfigs we just
+		// created" -- the race that otherwise lets the rescan run mid-reboot and
+		// produce spurious INCONSISTENT results (CMP-4631).
+		mcpBaseline, err := snapshotMachineConfigPoolGenerations(c)
+		if err != nil {
+			return fmt.Errorf("failed to snapshot MachineConfigPool generations in iteration %d: %w", iteration, err)
+		}
+
 		// Wait for remediations to be applied
-		err := WaitForRemediationsToBeApplied(tc, c, suiteName)
+		err = WaitForRemediationsToBeApplied(tc, c, suiteName)
 		if err != nil {
 			return fmt.Errorf("failed during remediation iteration %d: %w", iteration, err)
 		}
@@ -1265,7 +1276,7 @@ func ApplyRemediationsWithDependencies(tc *testConfig.TestConfig, c dynclient.Cl
 			log.Printf("Performing final rescan to get accurate results after all remediations")
 
 			// Wait for MachineConfigPools to be updated after final remediations
-			err = WaitForMachineConfigPoolsUpdated(tc, c)
+			err = WaitForMachineConfigPoolsUpdated(tc, c, mcpBaseline)
 			if err != nil {
 				return fmt.Errorf("failed to wait for MachineConfigPools after final remediations: %w", err)
 			}
@@ -1289,7 +1300,7 @@ func ApplyRemediationsWithDependencies(tc *testConfig.TestConfig, c dynclient.Cl
 		log.Printf("Found %d remediations with missing dependencies, triggering rescan", missingDepCount)
 
 		// Wait for MachineConfigPools to be updated after remediations
-		err = WaitForMachineConfigPoolsUpdated(tc, c)
+		err = WaitForMachineConfigPoolsUpdated(tc, c, mcpBaseline)
 		if err != nil {
 			return fmt.Errorf("failed to wait for MachineConfigPools in iteration %d: %w", iteration, err)
 		}
@@ -1525,8 +1536,40 @@ func RescanComplianceSuite(tc *testConfig.TestConfig, c dynclient.Client, suiteN
 	return nil
 }
 
-// WaitForMachineConfigPoolsUpdated waits for all MachineConfigPools to be fully updated.
-func WaitForMachineConfigPoolsUpdated(tc *testConfig.TestConfig, c dynclient.Client) error {
+// mcpReactionGrace is how long we allow the Machine Config Operator to react to
+// newly-applied MachineConfigs (render a new config and flip the pool to
+// Updating) before we trust a pool that has *not* advanced its generation as
+// having no pending work. Bridging this window is what stops the final rescan
+// from running while nodes are still rebooting onto staggered MachineConfig
+// generations (CMP-4631). The MCO normally reacts within a minute; the grace is
+// only actually paid when a pool genuinely has nothing to roll out.
+const mcpReactionGrace = 5 * time.Minute
+
+// snapshotMachineConfigPoolGenerations records each MachineConfigPool's
+// observed generation. Captured before remediations are applied, it lets
+// WaitForMachineConfigPoolsUpdated detect that a pool has observed a *new*
+// rendered configuration (its generation advances) rather than mistaking the
+// previous rollout's Updated=True state for completion of the new one.
+func snapshotMachineConfigPoolGenerations(c dynclient.Client) (map[string]int64, error) {
+	mcpList := &mcfgv1.MachineConfigPoolList{}
+	if err := c.List(goctx.TODO(), mcpList); err != nil {
+		return nil, fmt.Errorf("failed to list MachineConfigPools: %w", err)
+	}
+	gens := make(map[string]int64, len(mcpList.Items))
+	for i := range mcpList.Items {
+		gens[mcpList.Items[i].Name] = mcpList.Items[i].Status.ObservedGeneration
+	}
+	return gens, nil
+}
+
+// WaitForMachineConfigPoolsUpdated waits for all MachineConfigPools to be fully
+// updated. baseline is the per-pool observed generation captured before the
+// current wave of remediations was applied (see
+// snapshotMachineConfigPoolGenerations); a pool is only considered done once it
+// has both observed the new configuration (generation advanced past baseline)
+// and finished rolling it out, or the reaction grace has elapsed for a pool
+// that never changed.
+func WaitForMachineConfigPoolsUpdated(tc *testConfig.TestConfig, c dynclient.Client, baseline map[string]int64) error {
 	// Get all MachineConfigPools
 	mcpList := &mcfgv1.MachineConfigPoolList{}
 	err := c.List(goctx.TODO(), mcpList)
@@ -1540,6 +1583,7 @@ func WaitForMachineConfigPoolsUpdated(tc *testConfig.TestConfig, c dynclient.Cli
 	}
 
 	log.Printf("Waiting for %d MachineConfigPools to be fully updated", len(mcpList.Items))
+	start := time.Now()
 
 	// Wait for all MCPs to be updated
 	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 720) // 60 minutes max
@@ -1554,13 +1598,26 @@ func WaitForMachineConfigPoolsUpdated(tc *testConfig.TestConfig, c dynclient.Cli
 				return fmt.Errorf("failed to get MachineConfigPool %s: %w", mcpList.Items[i].Name, err)
 			}
 
-			// Check if the pool is fully updated
-			if !isMachineConfigPoolUpdated(currentMCP) {
-				pendingPools = append(pendingPools, fmt.Sprintf("%s (Updated: %d/%d, Unavailable: %d)",
+			// The pool has observed the new rendered config once its generation
+			// advances past the pre-remediation baseline. A pool that has not
+			// yet reacted is held pending until the grace elapses, so we never
+			// mistake the previous rollout's Updated=True for completion of this
+			// one.
+			reacted := currentMCP.Status.ObservedGeneration > baseline[currentMCP.Name]
+			converged := isMachineConfigPoolUpdated(currentMCP)
+			done := converged && (reacted || time.Since(start) >= mcpReactionGrace)
+
+			if !done {
+				pendingPools = append(pendingPools, fmt.Sprintf(
+					"%s (Updated: %d/%d, Unavailable: %d, gen %d->%d, reacted=%t, converged=%t)",
 					currentMCP.Name,
 					currentMCP.Status.UpdatedMachineCount,
 					currentMCP.Status.MachineCount,
-					currentMCP.Status.UnavailableMachineCount))
+					currentMCP.Status.UnavailableMachineCount,
+					baseline[currentMCP.Name],
+					currentMCP.Status.ObservedGeneration,
+					reacted,
+					converged))
 			}
 		}
 
@@ -1611,9 +1668,14 @@ func isMachineConfigPoolUpdated(mcp *mcfgv1.MachineConfigPool) bool {
 	// 1. All machines are updated (UpdatedMachineCount == MachineCount)
 	// 2. No machines are unavailable (UnavailableMachineCount == 0)
 	// 3. No machines are degraded (DegradedMachineCount == 0)
+	// 4. The targeted rendered config (spec) has been fully realized (status).
+	//    While the MCO is rolling a new config these names differ, so this
+	//    catches a pool that is mid-rollout even if the machine counts briefly
+	//    look settled.
 	return mcp.Status.UpdatedMachineCount == mcp.Status.MachineCount &&
 		mcp.Status.UnavailableMachineCount == 0 &&
-		mcp.Status.DegradedMachineCount == 0
+		mcp.Status.DegradedMachineCount == 0 &&
+		mcp.Spec.Configuration.Name == mcp.Status.Configuration.Name
 }
 
 // getBoolString converts a boolean to a string for logging.
