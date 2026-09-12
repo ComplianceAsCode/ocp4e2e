@@ -497,3 +497,119 @@ func TestProfileRemediations(t *testing.T) {
 		t.Logf("Warning: Failed to wait for scan cleanup for binding %s: %s", bindingName, err)
 	}
 }
+
+// TestNamespaceExemptionVariables tests the namespace exemption logic for
+// resource limit checks. This test validates that:
+// 1. Workloads without resource limits in exempted namespaces pass the check
+// 2. The exemption variables work correctly for DaemonSet, Deployment, and StatefulSet
+func TestNamespaceExemptionVariables(t *testing.T) {
+	// Skip if test type doesn't include platform tests
+	if tc.TestType != "platform" && tc.TestType != "all" {
+		t.Skipf("Skipping namespace exemption test: -test-type is %s", tc.TestType)
+	}
+
+	c, err := helpers.GenerateKubeConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate kube config: %s", err)
+	}
+
+	// Test namespace names
+	testNamespaces := []string{
+		"ns-76797-test-1",
+		"ns-76797-test-2",
+	}
+
+	// Create test namespaces
+	for _, ns := range testNamespaces {
+		err = createNamespace(c, ns)
+		if err != nil {
+			t.Fatalf("Failed to create test namespace %s: %s", ns, err)
+		}
+		t.Logf("Created test namespace: %s", ns)
+	}
+
+	// Cleanup namespaces at the end
+	defer func() {
+		for _, ns := range testNamespaces {
+			deleteNamespace(c, ns)
+		}
+	}()
+
+	// Create workloads without resource limits in test namespaces
+	err = createTestWorkloadsWithoutLimits(c, testNamespaces[0])
+	if err != nil {
+		t.Fatalf("Failed to create test workloads: %s", err)
+	}
+	t.Logf("Created test workloads without resource limits in %s", testNamespaces[0])
+
+	// Wait for workloads to be created
+	time.Sleep(5 * time.Second)
+
+	// Build regex pattern to exempt test namespaces
+	// Pattern matches both test namespaces
+	exemptionPattern := "^ns-76797-test-.*$"
+
+	// Create TailoredProfile with namespace exemption variables
+	tailoredProfileName := "ns-exemption-test-profile"
+	err = createTailoredProfileWithExemptions(tc, c, tailoredProfileName, exemptionPattern)
+	if err != nil {
+		t.Fatalf("Failed to create tailored profile with exemptions: %s", err)
+	}
+	t.Logf("Created TailoredProfile: %s with exemption pattern: %s", tailoredProfileName, exemptionPattern)
+
+	// Create scan binding for the tailored profile
+	bindingName := "ns-exemption-scan-binding"
+	err = helpers.CreateScanBinding(c, tc, bindingName, tailoredProfileName, "TailoredProfile", "default")
+	if err != nil {
+		t.Fatalf("Failed to create scan binding: %s", err)
+	}
+	t.Logf("Created ScanSettingBinding: %s", bindingName)
+
+	// Wait for compliance suite to complete
+	err = helpers.WaitForComplianceSuite(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to wait for compliance suite: %s", err)
+	}
+
+	// Get scan results
+	results, err := helpers.CreateResultMap(tc, c, bindingName)
+	if err != nil {
+		t.Fatalf("Failed to create result map: %s", err)
+	}
+
+	// Verify that resource limit rules PASS because namespaces are exempted
+	expectedRules := map[string]string{
+		"resource-requests-limits-in-daemonset":   "PASS",
+		"resource-requests-limits-in-deployment":  "PASS",
+		"resource-requests-limits-in-statefulset": "PASS",
+	}
+
+	var failures []string
+	for ruleName, expectedResult := range expectedRules {
+		// Find the actual result - the result name might include scan name prefix
+		actualResult := findRuleResult(results, ruleName)
+		if actualResult == "" {
+			failures = append(failures, fmt.Sprintf("Rule %s not found in scan results", ruleName))
+			continue
+		}
+
+		if actualResult != expectedResult {
+			failures = append(failures,
+				fmt.Sprintf("Rule %s: expected %s, got %s", ruleName, expectedResult, actualResult))
+		} else {
+			t.Logf("Rule %s: %s (namespace exemption working correctly)", ruleName, actualResult)
+		}
+	}
+
+	// Save results for debugging
+	err = helpers.SaveResultAsYAML(tc, results, "namespace-exemption-test-results.yaml")
+	if err != nil {
+		t.Logf("Warning: Failed to save test results: %s", err)
+	}
+
+	if len(failures) > 0 {
+		t.Fatalf("Namespace exemption test failed:\n%v", failures)
+	}
+
+	t.Log("Namespace exemption test passed successfully - all exempted workloads passed the resource limit checks")
+}
