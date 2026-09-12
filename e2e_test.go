@@ -169,7 +169,7 @@ func TestPlatformCompliance(t *testing.T) {
 		if err = helpers.GenerateMismatchReport(tc, c, mismatchedAssertions, platformBindingName); err != nil {
 			t.Fatalf("Failed to generate test report: %s", err)
 		}
-		t.Fatal("Actual cluster compliance state didn't match expected state")
+		t.Error("Actual cluster compliance state didn't match expected state")
 	}
 
 	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFileName, initialResults, finalResults)
@@ -282,7 +282,7 @@ func TestNodeCompliance(t *testing.T) {
 		if err = helpers.GenerateMismatchReport(tc, c, mismatchedAssertions, nodeBindingName); err != nil {
 			t.Fatalf("Failed to generate test report: %s", err)
 		}
-		t.Fatal("Actual cluster compliance state didn't match expected state")
+		t.Error("Actual cluster compliance state didn't match expected state")
 	}
 
 	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFileName, initialResults, finalResults)
@@ -352,7 +352,7 @@ func TestProfile(t *testing.T) {
 		if err = helpers.GenerateMismatchReport(tc, c, mismatchedAssertions, bindingName); err != nil {
 			t.Fatalf("Failed to generate test report: %s", err)
 		}
-		t.Fatal("Actual cluster compliance state didn't match expected state")
+		t.Error("Actual cluster compliance state didn't match expected state")
 	}
 
 	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFileName, initialResults, nil)
@@ -477,7 +477,7 @@ func TestProfileRemediations(t *testing.T) {
 		if err = helpers.GenerateMismatchReport(tc, c, mismatchedAssertions, bindingName); err != nil {
 			t.Fatalf("Failed to generate test report: %s", err)
 		}
-		t.Fatal("Actual cluster compliance state didn't match expected state")
+		t.Error("Actual cluster compliance state didn't match expected state")
 	}
 
 	err = helpers.GenerateAssertionFileFromResults(tc, c, assertionFileName, initialResults, finalResults)
