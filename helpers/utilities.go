@@ -46,7 +46,7 @@ var (
 	namespaceFileName        = "compliance-operator-ns.yaml"
 	catalogSourceFileName    = "compliance-operator-catalog-source.yaml"
 	operatorGroupFileName    = "compliance-operator-operator-group.yaml"
-	rosaSubscriptionFileName = "compliance-operator-rosa-subscription.yaml"
+	hcpSubscriptionFileName  = "compliance-operator-hcp-subscription.yaml"
 	subscriptionFileName     = "compliance-operator-alpha-subscription.yaml"
 )
 
@@ -198,11 +198,11 @@ func readObjFromYAML(r io.Reader) (*unstructured.Unstructured, error) {
 func ensureSubscriptionExists(c dynclient.Client, tc *testConfig.TestConfig) error {
 	s := subscriptionFileName
 	// We need to modify the default deployment through the subscription if
-	// we're dealing with a ROSA cluster because we only have worker nodes
-	// available to run the operator. If we don't do this, the deployment
-	// will spin waiting for master nodes to schedule the operator on.
-	if tc.Platform == "rosa" {
-		s = rosaSubscriptionFileName
+	// we're dealing with a ROSA or HyperShift cluster because we only have
+	// worker nodes available to run the operator. If we don't do this, the
+	// deployment will spin waiting for master nodes to schedule the operator on.
+	if tc.Platform == "rosa" || tc.Platform == "hypershift" {
+		s = hcpSubscriptionFileName
 	}
 	p := path.Join(tc.ContentDir, resourcesPath, s)
 
