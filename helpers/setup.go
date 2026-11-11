@@ -49,8 +49,11 @@ func Setup(tc *config.TestConfig) error {
 		return err
 	}
 
-	if err := setPoolRollingPolicy(c); err != nil {
-		return err
+	// MachineConfigPool API does not exist on HyperShift hosted clusters.
+	if tc.Platform != "hypershift" {
+		if err := setPoolRollingPolicy(c); err != nil {
+			return err
+		}
 	}
 
 	log.Printf("Setup completed successfully")
