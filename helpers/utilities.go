@@ -1252,9 +1252,14 @@ func ApplyRemediationsWithDependencies(tc *testConfig.TestConfig, c dynclient.Cl
 		// from "the MCO has not yet reacted to the MachineConfigs we just
 		// created" -- the race that otherwise lets the rescan run mid-reboot and
 		// produce spurious INCONSISTENT results (CMP-4631).
-		mcpBaseline, err := snapshotMachineConfigPoolGenerations(c)
-		if err != nil {
-			return fmt.Errorf("failed to snapshot MachineConfigPool generations in iteration %d: %w", iteration, err)
+		// MachineConfigPool API does not exist on HyperShift hosted clusters.
+		var mcpBaseline map[string]int64
+		var err error
+		if tc.Platform != "hypershift" {
+			mcpBaseline, err = snapshotMachineConfigPoolGenerations(c)
+			if err != nil {
+				return fmt.Errorf("failed to snapshot MachineConfigPool generations in iteration %d: %w", iteration, err)
+			}
 		}
 
 		// Wait for remediations to be applied
@@ -1275,10 +1280,13 @@ func ApplyRemediationsWithDependencies(tc *testConfig.TestConfig, c dynclient.Cl
 			// Perform final rescan to get accurate results after all remediations
 			log.Printf("Performing final rescan to get accurate results after all remediations")
 
-			// Wait for MachineConfigPools to be updated after final remediations
-			err = WaitForMachineConfigPoolsUpdated(tc, c, mcpBaseline)
-			if err != nil {
-				return fmt.Errorf("failed to wait for MachineConfigPools after final remediations: %w", err)
+			// Wait for MachineConfigPools to be updated after final remediations.
+			// MachineConfigPool API does not exist on HyperShift hosted clusters.
+			if tc.Platform != "hypershift" {
+				err = WaitForMachineConfigPoolsUpdated(tc, c, mcpBaseline)
+				if err != nil {
+					return fmt.Errorf("failed to wait for MachineConfigPools after final remediations: %w", err)
+				}
 			}
 
 			// Trigger final rescan
@@ -1299,10 +1307,13 @@ func ApplyRemediationsWithDependencies(tc *testConfig.TestConfig, c dynclient.Cl
 
 		log.Printf("Found %d remediations with missing dependencies, triggering rescan", missingDepCount)
 
-		// Wait for MachineConfigPools to be updated after remediations
-		err = WaitForMachineConfigPoolsUpdated(tc, c, mcpBaseline)
-		if err != nil {
-			return fmt.Errorf("failed to wait for MachineConfigPools in iteration %d: %w", iteration, err)
+		// Wait for MachineConfigPools to be updated after remediations.
+		// MachineConfigPool API does not exist on HyperShift hosted clusters.
+		if tc.Platform != "hypershift" {
+			err = WaitForMachineConfigPoolsUpdated(tc, c, mcpBaseline)
+			if err != nil {
+				return fmt.Errorf("failed to wait for MachineConfigPools in iteration %d: %w", iteration, err)
+			}
 		}
 
 		// Trigger rescan to re-evaluate dependencies
