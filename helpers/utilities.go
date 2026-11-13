@@ -1917,10 +1917,22 @@ func ValidateMachineSetScaleWithDeletePolicyNewest(tc *testConfig.TestConfig, c 
 		return err
 	}
 
-	msObj, originalReadyReplicas, originalDeletePolicy, hadDeletePolicy, err := getMachineSetState(c, msKey)
+	msState, err := getMachineSetState(c, msKey)
 	if err != nil {
 		return fmt.Errorf("failed to get initial machineset state for %s: %w", msName, err)
 	}
+
+	// This runs immediately after remediations have been applied, so workers may
+	// still be rebooting and status may lag spec. Scaling from an unconverged
+	// MachineSet would make the scale-up a no-op and the scale-down destroy a
+	// real worker, so refuse rather than guess.
+	if !msState.converged() {
+		return fmt.Errorf(
+			"machineset %s is not converged (spec.replicas=%d status.replicas=%d status.readyReplicas=%d); refusing to scale",
+			msName, msState.replicas, msState.totalReplicas, msState.readyReplicas,
+		)
+	}
+	originalReplicas := msState.replicas
 
 	initialMachineNames, err := labelExistingMachinesForMachineSet(c, msName, keepLabelKey, keepLabelValue, suiteName)
 	if err != nil {
@@ -1932,25 +1944,25 @@ func ValidateMachineSetScaleWithDeletePolicyNewest(tc *testConfig.TestConfig, c 
 		c,
 		msKey,
 		msName,
-		originalReadyReplicas,
-		originalDeletePolicy,
-		hadDeletePolicy,
+		originalReplicas,
+		msState.deletePolicy,
+		msState.hadDeletePolicy,
 		keepLabelKey,
 		initialMachineNames,
 	)
 
-	if err := setMachineSetDeletePolicyNewest(c, msKey, msObj, msName); err != nil {
+	if err := setMachineSetDeletePolicyNewest(c, msKey, msState.obj, msName); err != nil {
 		return err
 	}
 	if err := verifyMachineSetDeletePolicyNewest(c, msKey, msName); err != nil {
 		return err
 	}
 
-	targetReplicas := originalReadyReplicas + 1
+	targetReplicas := originalReplicas + 1
 	if err := scaleMachineSetAndWait(tc, c, msKey, targetReplicas, msName, "up"); err != nil {
 		return err
 	}
-	if err := scaleMachineSetAndWait(tc, c, msKey, originalReadyReplicas, msName, "down"); err != nil {
+	if err := scaleMachineSetAndWait(tc, c, msKey, originalReplicas, msName, "down"); err != nil {
 		return err
 	}
 
@@ -2003,23 +2015,63 @@ func getMachineSetForOneWorkerNode(c dynclient.Client) (string, types.Namespaced
 	return msName, types.NamespacedName{Name: msName, Namespace: machineAPINamespace}, nil
 }
 
-func getMachineSetState(
-	c dynclient.Client,
-	msKey types.NamespacedName,
-) (*unstructured.Unstructured, int64, string, bool, error) {
+// machineSetState is a snapshot of the parts of a MachineSet this test needs to
+// scale it and put it back the way it found it.
+type machineSetState struct {
+	obj *unstructured.Unstructured
+	// replicas is spec.replicas, the desired size. This is the baseline the test
+	// scales from and restores to; status is only used to decide whether the
+	// MachineSet is settled enough to touch.
+	replicas        int64
+	readyReplicas   int64
+	totalReplicas   int64
+	deletePolicy    string
+	hadDeletePolicy bool
+}
+
+// converged reports whether observed state matches the desired size, i.e. there
+// is no machine currently being provisioned, deleted, or rebooting.
+func (s *machineSetState) converged() bool {
+	return s.readyReplicas == s.replicas && s.totalReplicas == s.replicas
+}
+
+func getMachineSetState(c dynclient.Client, msKey types.NamespacedName) (*machineSetState, error) {
 	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
 	msObj := &unstructured.Unstructured{}
 	msObj.SetGroupVersionKind(msGVK)
 	if err := c.Get(goctx.TODO(), msKey, msObj); err != nil {
-		return nil, 0, "", false, err
+		return nil, err
 	}
 
-	originalDeletePolicy, hadDeletePolicy, _ := unstructured.NestedString(msObj.Object, "spec", "deletePolicy")
-	originalReadyReplicas, foundReady, _ := unstructured.NestedInt64(msObj.Object, "status", "readyReplicas")
-	if !foundReady {
-		originalReadyReplicas = 0
+	// spec.replicas is the only field that says how big the MachineSet is meant
+	// to be. Never fall back to a default here: guessing zero would make the
+	// caller scale the MachineSet away.
+	replicas, foundReplicas, err := unstructured.NestedInt64(msObj.Object, "spec", "replicas")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read spec.replicas from machineset %s: %w", msKey.Name, err)
 	}
-	return msObj, originalReadyReplicas, originalDeletePolicy, hadDeletePolicy, nil
+	if !foundReplicas {
+		return nil, fmt.Errorf("machineset %s has no spec.replicas", msKey.Name)
+	}
+
+	deletePolicy, hadDeletePolicy, _ := unstructured.NestedString(msObj.Object, "spec", "deletePolicy")
+	readyReplicas, foundReady, _ := unstructured.NestedInt64(msObj.Object, "status", "readyReplicas")
+	if !foundReady {
+		readyReplicas = 0
+	}
+	totalReplicas, foundTotal, _ := unstructured.NestedInt64(msObj.Object, "status", "replicas")
+	if !foundTotal {
+		totalReplicas = 0
+	}
+
+	return &machineSetState{
+		obj:             msObj,
+		replicas:        replicas,
+		readyReplicas:   readyReplicas,
+		totalReplicas:   totalReplicas,
+		deletePolicy:    deletePolicy,
+		hadDeletePolicy: hadDeletePolicy,
+	}, nil
 }
 
 func labelExistingMachinesForMachineSet(
@@ -2071,7 +2123,7 @@ func cleanupMachineSetScaleDeletePolicyAndLabels(
 	c dynclient.Client,
 	msKey types.NamespacedName,
 	msName string,
-	originalReadyReplicas int64,
+	originalReplicas int64,
 	originalDeletePolicy string,
 	hadDeletePolicy bool,
 	keepLabelKey string,
@@ -2083,11 +2135,11 @@ func cleanupMachineSetScaleDeletePolicyAndLabels(
 	restoreObj.SetGroupVersionKind(msGVK)
 	if err := c.Get(goctx.TODO(), msKey, restoreObj); err != nil {
 		log.Printf("cleanup warning: failed to get machineset %s: %v", msName, err)
-	} else if err := unstructured.SetNestedField(restoreObj.Object, originalReadyReplicas, "spec", "replicas"); err != nil {
+	} else if err := unstructured.SetNestedField(restoreObj.Object, originalReplicas, "spec", "replicas"); err != nil {
 		log.Printf("cleanup warning: failed to set replicas on machineset %s: %v", msName, err)
 	} else if err := c.Update(goctx.TODO(), restoreObj); err != nil {
 		log.Printf("cleanup warning: failed to restore replicas for machineset %s: %v", msName, err)
-	} else if err := waitForMachineSetReadyReplicas(tc, c, msKey, originalReadyReplicas); err != nil {
+	} else if err := waitForMachineSetReadyReplicas(tc, c, msKey, originalReplicas); err != nil {
 		log.Printf("cleanup warning: failed waiting for replicas restore on machineset %s: %v", msName, err)
 	}
 
