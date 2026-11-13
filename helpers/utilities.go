@@ -1969,11 +1969,21 @@ func ValidateMachineSetScaleWithDeletePolicyNewest(tc *testConfig.TestConfig, c 
 	if err := scaleMachineSetAndWait(tc, c, msKey, targetReplicas, msName, "up"); err != nil {
 		return err
 	}
+
+	// Identify the machine the scale-up added while it is still the only new
+	// one, so the scale-down can be checked against a specific name rather
+	// than against "nothing went missing".
+	newestMachineName, err := findMachineAddedByScaleUp(c, msName, initialMachineNames)
+	if err != nil {
+		return err
+	}
+	log.Printf("machineset %s scaled up, newest machine is %s", msName, newestMachineName)
+
 	if err := scaleMachineSetAndWait(tc, c, msKey, originalReplicas, msName, "down"); err != nil {
 		return err
 	}
 
-	if err := verifyOriginalMachinesPreserved(c, msName, initialMachineNames); err != nil {
+	if err := verifyNewestMachineDeleted(tc, c, msName, newestMachineName, initialMachineNames); err != nil {
 		return err
 	}
 
@@ -2127,36 +2137,87 @@ func updateWithConflictRetry(
 		gvk.Kind, key.Name, maxConflictRetries, lastConflict)
 }
 
-func labelExistingMachinesForMachineSet(
-	c dynclient.Client,
-	msName, keepLabelKey, keepLabelValue, suiteName string,
-) (map[string]struct{}, error) {
+// machineNames splits a MachineSet's machines into those that are live and
+// those that are on their way out.
+//
+// The distinction matters because the MachineSet controller stops counting a
+// machine toward status.readyReplicas as soon as it sets a deletionTimestamp,
+// but the Machine object itself survives the whole drain and deprovision,
+// which takes minutes. A machine that is merely present has therefore not
+// necessarily been preserved.
+type machineNames struct {
+	live     map[string]struct{}
+	deleting map[string]struct{}
+}
+
+// has reports whether the machine still exists at all, deleting or not.
+func (m *machineNames) has(name string) bool {
+	_, live := m.live[name]
+	_, deleting := m.deleting[name]
+	return live || deleting
+}
+
+// preserved reports whether the machine exists and is not being torn down.
+func (m *machineNames) preserved(name string) bool {
+	_, live := m.live[name]
+	return live
+}
+
+func listMachinesForMachineSet(c dynclient.Client, msName string) (*machineNames, error) {
 	const machineAPINamespace = "openshift-machine-api"
 
 	machineSelector, err := labels.Parse("machine.openshift.io/cluster-api-machineset=" + msName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse machineset machine selector: %w", err)
 	}
-	initialMachineList := &unstructured.UnstructuredList{}
-	initialMachineList.SetGroupVersionKind(schema.GroupVersionKind{
+	machineList := &unstructured.UnstructuredList{}
+	machineList.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "machine.openshift.io",
 		Version: "v1beta1",
 		Kind:    "MachineList",
 	})
-	if err := c.List(goctx.TODO(), initialMachineList, &dynclient.ListOptions{
+	if err := c.List(goctx.TODO(), machineList, &dynclient.ListOptions{
 		Namespace:     machineAPINamespace,
 		LabelSelector: machineSelector,
 	}); err != nil {
 		return nil, fmt.Errorf("failed to list machines for machineset %s: %w", msName, err)
 	}
-	if len(initialMachineList.Items) == 0 {
-		return nil, fmt.Errorf("no machines found for machineset %s", msName)
+
+	names := &machineNames{
+		live:     make(map[string]struct{}, len(machineList.Items)),
+		deleting: make(map[string]struct{}),
+	}
+	for i := range machineList.Items {
+		m := &machineList.Items[i]
+		if m.GetDeletionTimestamp() != nil {
+			names.deleting[m.GetName()] = struct{}{}
+			continue
+		}
+		names.live[m.GetName()] = struct{}{}
+	}
+	return names, nil
+}
+
+func labelExistingMachinesForMachineSet(
+	c dynclient.Client,
+	msName, keepLabelKey, keepLabelValue, suiteName string,
+) (map[string]struct{}, error) {
+	const machineAPINamespace = "openshift-machine-api"
+
+	initial, err := listMachinesForMachineSet(c, msName)
+	if err != nil {
+		return nil, err
+	}
+	if len(initial.live) == 0 {
+		return nil, fmt.Errorf("no live machines found for machineset %s", msName)
+	}
+	if len(initial.deleting) > 0 {
+		return nil, fmt.Errorf("machineset %s has machines already being deleted: %v", msName, initial.deleting)
 	}
 
 	machineGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "Machine"}
-	initialMachineNames := make(map[string]struct{}, len(initialMachineList.Items))
-	for i := range initialMachineList.Items {
-		machineName := initialMachineList.Items[i].GetName()
+	initialMachineNames := make(map[string]struct{}, len(initial.live))
+	for machineName := range initial.live {
 		initialMachineNames[machineName] = struct{}{}
 		key := types.NamespacedName{Name: machineName, Namespace: machineAPINamespace}
 		err := updateWithConflictRetry(c, machineGVK, key, func(m *unstructured.Unstructured) error {
@@ -2280,38 +2341,81 @@ func scaleMachineSetAndWait(
 	return nil
 }
 
-func verifyOriginalMachinesPreserved(
+// findMachineAddedByScaleUp returns the name of the one machine that exists
+// after the scale-up but did not exist before it. That machine is the newest,
+// so deletePolicy=Newest must be the one the scale-down removes.
+func findMachineAddedByScaleUp(
 	c dynclient.Client,
 	msName string,
 	initialMachineNames map[string]struct{},
-) error {
-	const machineAPINamespace = "openshift-machine-api"
-	machineSelector, err := labels.Parse("machine.openshift.io/cluster-api-machineset=" + msName)
+) (string, error) {
+	current, err := listMachinesForMachineSet(c, msName)
 	if err != nil {
-		return fmt.Errorf("failed to parse machineset machine selector: %w", err)
+		return "", err
 	}
-	finalMachineList := &unstructured.UnstructuredList{}
-	finalMachineList.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "machine.openshift.io",
-		Version: "v1beta1",
-		Kind:    "MachineList",
-	})
-	if err = c.List(goctx.TODO(), finalMachineList, &dynclient.ListOptions{
-		Namespace:     machineAPINamespace,
-		LabelSelector: machineSelector,
-	}); err != nil {
-		return fmt.Errorf("failed to list final machines for machineset %s: %w", msName, err)
-	}
-	finalMachineNames := make(map[string]struct{}, len(finalMachineList.Items))
-	for i := range finalMachineList.Items {
-		finalMachineNames[finalMachineList.Items[i].GetName()] = struct{}{}
-	}
-	for name := range initialMachineNames {
-		if _, exists := finalMachineNames[name]; !exists {
-			return fmt.Errorf("machineset %s scaled down but older machine %s was deleted; expected newest machine to be deleted", msName, name)
+
+	added := make([]string, 0, 1)
+	for name := range current.live {
+		if _, existed := initialMachineNames[name]; !existed {
+			added = append(added, name)
 		}
 	}
-	return nil
+	if len(added) != 1 {
+		return "", fmt.Errorf(
+			"expected exactly 1 new machine for machineset %s after scale up, found %d %v",
+			msName, len(added), added,
+		)
+	}
+	return added[0], nil
+}
+
+// verifyNewestMachineDeleted asserts that the scale-down removed the machine
+// the scale-up created, and no other.
+//
+// This has to poll rather than check once. scaleMachineSetAndWait returns as
+// soon as status.readyReplicas is back to the original count, which happens
+// the moment the controller stamps a deletionTimestamp on its victim -- before
+// the Machine object goes away, and potentially before the controller has
+// picked a victim at all. Reading the machine list at that instant would see
+// every machine still present and pass no matter which one was chosen.
+func verifyNewestMachineDeleted(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	msName, newestMachineName string,
+	initialMachineNames map[string]struct{},
+) error {
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 60)
+	return backoff.RetryNotify(func() error {
+		current, err := listMachinesForMachineSet(c, msName)
+		if err != nil {
+			return err
+		}
+
+		// An original machine that is gone, or being torn down, is the exact
+		// regression this test exists to catch. Fail now rather than wait for
+		// the rest of the budget to run out.
+		for name := range initialMachineNames {
+			if !current.preserved(name) {
+				return backoff.Permanent(fmt.Errorf(
+					"machineset %s scaled down but original machine %s was deleted; expected newest machine %s to be deleted",
+					msName, name, newestMachineName,
+				))
+			}
+		}
+
+		// The newest machine is correctly on its way out once it is either
+		// marked for deletion or fully gone.
+		if current.preserved(newestMachineName) {
+			return fmt.Errorf("newest machine %s is not marked for deletion yet", newestMachineName)
+		}
+		if current.has(newestMachineName) {
+			log.Printf("machineset %s: newest machine %s is being deleted as expected", msName, newestMachineName)
+		}
+		return nil
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("waiting for machineset %s to delete newest machine %s after %s: %v",
+			msName, newestMachineName, d.String(), err)
+	})
 }
 
 func waitForMachineSetReadyReplicas(
