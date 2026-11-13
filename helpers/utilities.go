@@ -1955,7 +1955,7 @@ func ValidateMachineSetScaleWithDeletePolicyNewest(tc *testConfig.TestConfig, c 
 		initialMachineNames,
 	)
 
-	if err := setMachineSetDeletePolicyNewest(c, msKey, msState.obj, msName); err != nil {
+	if err := setMachineSetDeletePolicyNewest(c, msKey, msName); err != nil {
 		return err
 	}
 	if err := verifyMachineSetDeletePolicyNewest(c, msKey, msName); err != nil {
@@ -2025,7 +2025,6 @@ func getMachineSetForOneWorkerNode(c dynclient.Client) (string, types.Namespaced
 // machineSetState is a snapshot of the parts of a MachineSet this test needs to
 // scale it and put it back the way it found it.
 type machineSetState struct {
-	obj *unstructured.Unstructured
 	// replicas is spec.replicas, the desired size. This is the baseline the test
 	// scales from and restores to; status is only used to decide whether the
 	// MachineSet is settled enough to touch.
@@ -2072,13 +2071,60 @@ func getMachineSetState(c dynclient.Client, msKey types.NamespacedName) (*machin
 	}
 
 	return &machineSetState{
-		obj:             msObj,
 		replicas:        replicas,
 		readyReplicas:   readyReplicas,
 		totalReplicas:   totalReplicas,
 		deletePolicy:    deletePolicy,
 		hadDeletePolicy: hadDeletePolicy,
 	}, nil
+}
+
+// updateWithConflictRetry reads the object, applies mutate, and writes it back,
+// retrying from a fresh read when the API server reports a conflict.
+//
+// The machine-API controllers write to MachineSet and Machine objects whenever
+// a machine is created, becomes ready, or goes away, which is more or less
+// continuously during a scale test and during the post-remediation reboots that
+// precede it. An object held across any other API call is therefore likely to
+// be stale by the time it is written, so read immediately before writing and
+// re-read rather than give up when someone else got there first.
+func updateWithConflictRetry(
+	c dynclient.Client,
+	gvk schema.GroupVersionKind,
+	key types.NamespacedName,
+	mutate func(obj *unstructured.Unstructured) error,
+) error {
+	// Mirrors the shape of client-go's retry.DefaultRetry, which is not
+	// vendored here.
+	const maxConflictRetries = 5
+	const conflictRetryDelay = 10 * time.Millisecond
+
+	var lastConflict error
+	for attempt := 1; attempt <= maxConflictRetries; attempt++ {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(gvk)
+		if err := c.Get(goctx.TODO(), key, obj); err != nil {
+			return err
+		}
+		if err := mutate(obj); err != nil {
+			return err
+		}
+
+		err := c.Update(goctx.TODO(), obj)
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsConflict(err) {
+			return err
+		}
+
+		lastConflict = err
+		log.Printf("conflict updating %s %s (attempt %d/%d), retrying from a fresh read",
+			gvk.Kind, key.Name, attempt, maxConflictRetries)
+		time.Sleep(conflictRetryDelay)
+	}
+	return fmt.Errorf("gave up updating %s %s after %d conflicts: %w",
+		gvk.Kind, key.Name, maxConflictRetries, lastConflict)
 }
 
 func labelExistingMachinesForMachineSet(
@@ -2107,19 +2153,24 @@ func labelExistingMachinesForMachineSet(
 		return nil, fmt.Errorf("no machines found for machineset %s", msName)
 	}
 
+	machineGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "Machine"}
 	initialMachineNames := make(map[string]struct{}, len(initialMachineList.Items))
 	for i := range initialMachineList.Items {
-		m := &initialMachineList.Items[i]
-		initialMachineNames[m.GetName()] = struct{}{}
-		lbls := m.GetLabels()
-		if lbls == nil {
-			lbls = map[string]string{}
-		}
-		lbls[keepLabelKey] = keepLabelValue
-		lbls[keepLabelKey+"-suite"] = suiteName
-		m.SetLabels(lbls)
-		if err := c.Update(goctx.TODO(), m); err != nil {
-			return nil, fmt.Errorf("failed to label machine %s: %w", m.GetName(), err)
+		machineName := initialMachineList.Items[i].GetName()
+		initialMachineNames[machineName] = struct{}{}
+		key := types.NamespacedName{Name: machineName, Namespace: machineAPINamespace}
+		err := updateWithConflictRetry(c, machineGVK, key, func(m *unstructured.Unstructured) error {
+			lbls := m.GetLabels()
+			if lbls == nil {
+				lbls = map[string]string{}
+			}
+			lbls[keepLabelKey] = keepLabelValue
+			lbls[keepLabelKey+"-suite"] = suiteName
+			m.SetLabels(lbls)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to label machine %s: %w", machineName, err)
 		}
 	}
 	return initialMachineNames, nil
@@ -2144,13 +2195,10 @@ func cleanupMachineSetScaleDeletePolicyAndLabels(
 	// leaves the MachineSet at its original size, and writing to it here would
 	// resize a MachineSet the test never touched.
 	if *scaled {
-		restoreObj := &unstructured.Unstructured{}
-		restoreObj.SetGroupVersionKind(msGVK)
-		if err := c.Get(goctx.TODO(), msKey, restoreObj); err != nil {
-			log.Printf("cleanup warning: failed to get machineset %s: %v", msName, err)
-		} else if err := unstructured.SetNestedField(restoreObj.Object, originalReplicas, "spec", "replicas"); err != nil {
-			log.Printf("cleanup warning: failed to set replicas on machineset %s: %v", msName, err)
-		} else if err := c.Update(goctx.TODO(), restoreObj); err != nil {
+		err := updateWithConflictRetry(c, msGVK, msKey, func(ms *unstructured.Unstructured) error {
+			return unstructured.SetNestedField(ms.Object, originalReplicas, "spec", "replicas")
+		})
+		if err != nil {
 			log.Printf("cleanup warning: failed to restore replicas for machineset %s: %v", msName, err)
 		} else if err := waitForMachineSetReadyReplicas(tc, c, msKey, originalReplicas); err != nil {
 			log.Printf("cleanup warning: failed waiting for replicas restore on machineset %s: %v", msName, err)
@@ -2159,51 +2207,41 @@ func cleanupMachineSetScaleDeletePolicyAndLabels(
 		log.Printf("cleanup: machineset %s was never scaled, leaving spec.replicas alone", msName)
 	}
 
-	restoreObj := &unstructured.Unstructured{}
-	restoreObj.SetGroupVersionKind(msGVK)
-	if err := c.Get(goctx.TODO(), msKey, restoreObj); err != nil {
-		log.Printf("cleanup warning: failed to re-get machineset %s: %v", msName, err)
-	} else {
+	err := updateWithConflictRetry(c, msGVK, msKey, func(ms *unstructured.Unstructured) error {
 		if hadDeletePolicy {
-			if err := unstructured.SetNestedField(restoreObj.Object, originalDeletePolicy, "spec", "deletePolicy"); err != nil {
-				log.Printf("cleanup warning: failed to restore deletePolicy for machineset %s: %v", msName, err)
-			}
-		} else {
-			unstructured.RemoveNestedField(restoreObj.Object, "spec", "deletePolicy")
+			return unstructured.SetNestedField(ms.Object, originalDeletePolicy, "spec", "deletePolicy")
 		}
-		if err := c.Update(goctx.TODO(), restoreObj); err != nil {
-			log.Printf("cleanup warning: failed to restore deletePolicy for machineset %s: %v", msName, err)
-		}
+		unstructured.RemoveNestedField(ms.Object, "spec", "deletePolicy")
+		return nil
+	})
+	if err != nil {
+		log.Printf("cleanup warning: failed to restore deletePolicy for machineset %s: %v", msName, err)
 	}
 
+	machineGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "Machine"}
 	for machineName := range initialMachineNames {
-		machine := &unstructured.Unstructured{}
-		machine.SetGroupVersionKind(schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "Machine"})
 		key := types.NamespacedName{Name: machineName, Namespace: machineAPINamespace}
-		if err := c.Get(goctx.TODO(), key, machine); err != nil {
-			continue
-		}
-		lbls := machine.GetLabels()
-		delete(lbls, keepLabelKey)
-		delete(lbls, keepLabelKey+"-suite")
-		machine.SetLabels(lbls)
-		if err := c.Update(goctx.TODO(), machine); err != nil {
+		err := updateWithConflictRetry(c, machineGVK, key, func(m *unstructured.Unstructured) error {
+			lbls := m.GetLabels()
+			delete(lbls, keepLabelKey)
+			delete(lbls, keepLabelKey+"-suite")
+			m.SetLabels(lbls)
+			return nil
+		})
+		// A machine the scale-down removed is gone, not a cleanup failure.
+		if err != nil && !apierrors.IsNotFound(err) {
 			log.Printf("cleanup warning: failed to remove keep labels from machine %s: %v", machineName, err)
 		}
 	}
 }
 
-func setMachineSetDeletePolicyNewest(
-	c dynclient.Client,
-	msKey types.NamespacedName,
-	msObj *unstructured.Unstructured,
-	msName string,
-) error {
-	if err := unstructured.SetNestedField(msObj.Object, "Newest", "spec", "deletePolicy"); err != nil {
+func setMachineSetDeletePolicyNewest(c dynclient.Client, msKey types.NamespacedName, msName string) error {
+	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+	err := updateWithConflictRetry(c, msGVK, msKey, func(ms *unstructured.Unstructured) error {
+		return unstructured.SetNestedField(ms.Object, "Newest", "spec", "deletePolicy")
+	})
+	if err != nil {
 		return fmt.Errorf("failed to set deletePolicy=Newest on machineset %s: %w", msName, err)
-	}
-	if err := c.Update(goctx.TODO(), msObj); err != nil {
-		return fmt.Errorf("failed to update machineset %s with deletePolicy=Newest: %w", msName, err)
 	}
 	return nil
 }
@@ -2230,16 +2268,11 @@ func scaleMachineSetAndWait(
 	msName, direction string,
 ) error {
 	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
-	msObj := &unstructured.Unstructured{}
-	msObj.SetGroupVersionKind(msGVK)
-	if err := c.Get(goctx.TODO(), msKey, msObj); err != nil {
-		return fmt.Errorf("failed to get machineset %s before scale %s: %w", msName, direction, err)
-	}
-	if err := unstructured.SetNestedField(msObj.Object, replicas, "spec", "replicas"); err != nil {
-		return fmt.Errorf("failed to set replicas=%d for machineset %s scale %s: %w", replicas, msName, direction, err)
-	}
-	if err := c.Update(goctx.TODO(), msObj); err != nil {
-		return fmt.Errorf("failed to scale %s machineset %s: %w", direction, msName, err)
+	err := updateWithConflictRetry(c, msGVK, msKey, func(ms *unstructured.Unstructured) error {
+		return unstructured.SetNestedField(ms.Object, replicas, "spec", "replicas")
+	})
+	if err != nil {
+		return fmt.Errorf("failed to scale %s machineset %s to %d replicas: %w", direction, msName, replicas, err)
 	}
 	if err := waitForMachineSetReadyReplicas(tc, c, msKey, replicas); err != nil {
 		return fmt.Errorf("failed waiting for machineset %s scale %s: %w", msName, direction, err)
