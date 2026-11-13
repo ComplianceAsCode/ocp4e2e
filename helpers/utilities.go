@@ -23,12 +23,14 @@ import (
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	extscheme "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/scheme"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
@@ -1901,6 +1903,546 @@ func CreateResultMap(_ *testConfig.TestConfig, c dynclient.Client, suiteName str
 
 	log.Printf("Created result map with %d rules for suite %s", len(resultMap), suiteName)
 	return resultMap, nil
+}
+
+// ValidateMachineSetScaleWithDeletePolicyNewest validates that a worker MachineSet
+// can scale up and back down after remediations and that deletePolicy=Newest
+// removes the newest machine first on scale-down.
+func ValidateMachineSetScaleWithDeletePolicyNewest(tc *testConfig.TestConfig, c dynclient.Client, suiteName string) error {
+	const keepLabelKey = "ocp4e2e.openshift.io/scan-suite"
+	const keepLabelValue = "kept-after-scan"
+
+	msName, msKey, err := getMachineSetForOneWorkerNode(c)
+	if err != nil {
+		return err
+	}
+
+	msState, err := getMachineSetState(c, msKey)
+	if err != nil {
+		return fmt.Errorf("failed to get initial machineset state for %s: %w", msName, err)
+	}
+
+	// This runs immediately after remediations have been applied, so workers may
+	// still be rebooting and status may lag spec. Scaling from an unconverged
+	// MachineSet would make the scale-up a no-op and the scale-down destroy a
+	// real worker, so refuse rather than guess.
+	if !msState.converged() {
+		return fmt.Errorf(
+			"machineset %s is not converged (spec.replicas=%d status.replicas=%d status.readyReplicas=%d); refusing to scale",
+			msName, msState.replicas, msState.totalReplicas, msState.readyReplicas,
+		)
+	}
+	originalReplicas := msState.replicas
+
+	initialMachineNames, err := labelExistingMachinesForMachineSet(c, msName, keepLabelKey, keepLabelValue, suiteName)
+	if err != nil {
+		return err
+	}
+
+	// Only the code below this point changes spec.replicas, so cleanup must not
+	// write it back unless we got that far.
+	scaled := false
+	defer cleanupMachineSetScaleDeletePolicyAndLabels(
+		tc,
+		c,
+		msKey,
+		msName,
+		originalReplicas,
+		&scaled,
+		msState.deletePolicy,
+		msState.hadDeletePolicy,
+		keepLabelKey,
+		initialMachineNames,
+	)
+
+	if err := setMachineSetDeletePolicyNewest(c, msKey, msName); err != nil {
+		return err
+	}
+	if err := verifyMachineSetDeletePolicyNewest(c, msKey, msName); err != nil {
+		return err
+	}
+
+	// Set before the scale-up rather than after it: scaleMachineSetAndWait can
+	// fail with spec.replicas already written, and that does need restoring.
+	scaled = true
+	targetReplicas := originalReplicas + 1
+	if err := scaleMachineSetAndWait(tc, c, msKey, targetReplicas, msName, "up"); err != nil {
+		return err
+	}
+
+	// Identify the machine the scale-up added while it is still the only new
+	// one, so the scale-down can be checked against a specific name rather
+	// than against "nothing went missing".
+	newestMachineName, err := findMachineAddedByScaleUp(c, msName, initialMachineNames)
+	if err != nil {
+		return err
+	}
+	log.Printf("machineset %s scaled up, newest machine is %s", msName, newestMachineName)
+
+	if err := scaleMachineSetAndWait(tc, c, msKey, originalReplicas, msName, "down"); err != nil {
+		return err
+	}
+
+	if err := verifyNewestMachineDeleted(tc, c, msName, newestMachineName, initialMachineNames); err != nil {
+		return err
+	}
+
+	log.Printf("Validated machineset scale behavior for %s with deletePolicy=Newest (suite=%s)", msName, suiteName)
+	return nil
+}
+
+func getMachineSetForOneWorkerNode(c dynclient.Client) (string, types.NamespacedName, error) {
+	const machineAPINamespace = "openshift-machine-api"
+
+	nodeSelector, err := labels.Parse("node-role.kubernetes.io/edge!=,kubernetes.io/os!=windows,node-role.kubernetes.io/worker=")
+	if err != nil {
+		return "", types.NamespacedName{}, fmt.Errorf("failed to parse worker node selector: %w", err)
+	}
+
+	nodes := &corev1.NodeList{}
+	if err := c.List(goctx.TODO(), nodes, &dynclient.ListOptions{LabelSelector: nodeSelector}); err != nil {
+		return "", types.NamespacedName{}, fmt.Errorf("failed to list worker nodes: %w", err)
+	}
+	if len(nodes.Items) == 0 {
+		return "", types.NamespacedName{}, fmt.Errorf("no worker node found for machineset scale validation")
+	}
+	workerNode := &nodes.Items[0]
+
+	machineRef, ok := workerNode.Annotations["machine.openshift.io/machine"]
+	if !ok || machineRef == "" {
+		return "", types.NamespacedName{}, fmt.Errorf("worker node %s does not have machine annotation", workerNode.Name)
+	}
+	parts := strings.SplitN(machineRef, "/", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return "", types.NamespacedName{}, fmt.Errorf("worker node %s has invalid machine annotation: %s", workerNode.Name, machineRef)
+	}
+	machineName := parts[1]
+
+	machineGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "Machine"}
+	machineObj := &unstructured.Unstructured{}
+	machineObj.SetGroupVersionKind(machineGVK)
+	if err := c.Get(goctx.TODO(), types.NamespacedName{Name: machineName, Namespace: machineAPINamespace}, machineObj); err != nil {
+		return "", types.NamespacedName{}, fmt.Errorf("failed to get machine %s: %w", machineName, err)
+	}
+
+	msName, ok := machineObj.GetLabels()["machine.openshift.io/cluster-api-machineset"]
+	if !ok || msName == "" {
+		return "", types.NamespacedName{}, fmt.Errorf("machine %s does not have machineset label", machineName)
+	}
+	return msName, types.NamespacedName{Name: msName, Namespace: machineAPINamespace}, nil
+}
+
+// machineSetState is a snapshot of the parts of a MachineSet this test needs to
+// scale it and put it back the way it found it.
+type machineSetState struct {
+	// replicas is spec.replicas, the desired size. This is the baseline the test
+	// scales from and restores to; status is only used to decide whether the
+	// MachineSet is settled enough to touch.
+	replicas        int64
+	readyReplicas   int64
+	totalReplicas   int64
+	deletePolicy    string
+	hadDeletePolicy bool
+}
+
+// converged reports whether observed state matches the desired size, i.e. there
+// is no machine currently being provisioned, deleted, or rebooting.
+func (s *machineSetState) converged() bool {
+	return s.readyReplicas == s.replicas && s.totalReplicas == s.replicas
+}
+
+func getMachineSetState(c dynclient.Client, msKey types.NamespacedName) (*machineSetState, error) {
+	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+	msObj := &unstructured.Unstructured{}
+	msObj.SetGroupVersionKind(msGVK)
+	if err := c.Get(goctx.TODO(), msKey, msObj); err != nil {
+		return nil, err
+	}
+
+	// spec.replicas is the only field that says how big the MachineSet is meant
+	// to be. Never fall back to a default here: guessing zero would make the
+	// caller scale the MachineSet away.
+	replicas, foundReplicas, err := unstructured.NestedInt64(msObj.Object, "spec", "replicas")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read spec.replicas from machineset %s: %w", msKey.Name, err)
+	}
+	if !foundReplicas {
+		return nil, fmt.Errorf("machineset %s has no spec.replicas", msKey.Name)
+	}
+
+	deletePolicy, hadDeletePolicy, _ := unstructured.NestedString(msObj.Object, "spec", "deletePolicy")
+	readyReplicas, foundReady, _ := unstructured.NestedInt64(msObj.Object, "status", "readyReplicas")
+	if !foundReady {
+		readyReplicas = 0
+	}
+	totalReplicas, foundTotal, _ := unstructured.NestedInt64(msObj.Object, "status", "replicas")
+	if !foundTotal {
+		totalReplicas = 0
+	}
+
+	return &machineSetState{
+		replicas:        replicas,
+		readyReplicas:   readyReplicas,
+		totalReplicas:   totalReplicas,
+		deletePolicy:    deletePolicy,
+		hadDeletePolicy: hadDeletePolicy,
+	}, nil
+}
+
+// updateWithConflictRetry reads the object, applies mutate, and writes it back,
+// retrying from a fresh read when the API server reports a conflict.
+//
+// The machine-API controllers write to MachineSet and Machine objects whenever
+// a machine is created, becomes ready, or goes away, which is more or less
+// continuously during a scale test and during the post-remediation reboots that
+// precede it. An object held across any other API call is therefore likely to
+// be stale by the time it is written, so read immediately before writing and
+// re-read rather than give up when someone else got there first.
+func updateWithConflictRetry(
+	c dynclient.Client,
+	gvk schema.GroupVersionKind,
+	key types.NamespacedName,
+	mutate func(obj *unstructured.Unstructured) error,
+) error {
+	// Mirrors the shape of client-go's retry.DefaultRetry, which is not
+	// vendored here.
+	const maxConflictRetries = 5
+	const conflictRetryDelay = 10 * time.Millisecond
+
+	var lastConflict error
+	for attempt := 1; attempt <= maxConflictRetries; attempt++ {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(gvk)
+		if err := c.Get(goctx.TODO(), key, obj); err != nil {
+			return err
+		}
+		if err := mutate(obj); err != nil {
+			return err
+		}
+
+		err := c.Update(goctx.TODO(), obj)
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsConflict(err) {
+			return err
+		}
+
+		lastConflict = err
+		log.Printf("conflict updating %s %s (attempt %d/%d), retrying from a fresh read",
+			gvk.Kind, key.Name, attempt, maxConflictRetries)
+		time.Sleep(conflictRetryDelay)
+	}
+	return fmt.Errorf("gave up updating %s %s after %d conflicts: %w",
+		gvk.Kind, key.Name, maxConflictRetries, lastConflict)
+}
+
+// machineNames splits a MachineSet's machines into those that are live and
+// those that are on their way out.
+//
+// The distinction matters because the MachineSet controller stops counting a
+// machine toward status.readyReplicas as soon as it sets a deletionTimestamp,
+// but the Machine object itself survives the whole drain and deprovision,
+// which takes minutes. A machine that is merely present has therefore not
+// necessarily been preserved.
+type machineNames struct {
+	live     map[string]struct{}
+	deleting map[string]struct{}
+}
+
+// has reports whether the machine still exists at all, deleting or not.
+func (m *machineNames) has(name string) bool {
+	_, live := m.live[name]
+	_, deleting := m.deleting[name]
+	return live || deleting
+}
+
+// preserved reports whether the machine exists and is not being torn down.
+func (m *machineNames) preserved(name string) bool {
+	_, live := m.live[name]
+	return live
+}
+
+func listMachinesForMachineSet(c dynclient.Client, msName string) (*machineNames, error) {
+	const machineAPINamespace = "openshift-machine-api"
+
+	machineSelector, err := labels.Parse("machine.openshift.io/cluster-api-machineset=" + msName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse machineset machine selector: %w", err)
+	}
+	machineList := &unstructured.UnstructuredList{}
+	machineList.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "machine.openshift.io",
+		Version: "v1beta1",
+		Kind:    "MachineList",
+	})
+	if err := c.List(goctx.TODO(), machineList, &dynclient.ListOptions{
+		Namespace:     machineAPINamespace,
+		LabelSelector: machineSelector,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to list machines for machineset %s: %w", msName, err)
+	}
+
+	names := &machineNames{
+		live:     make(map[string]struct{}, len(machineList.Items)),
+		deleting: make(map[string]struct{}),
+	}
+	for i := range machineList.Items {
+		m := &machineList.Items[i]
+		if m.GetDeletionTimestamp() != nil {
+			names.deleting[m.GetName()] = struct{}{}
+			continue
+		}
+		names.live[m.GetName()] = struct{}{}
+	}
+	return names, nil
+}
+
+func labelExistingMachinesForMachineSet(
+	c dynclient.Client,
+	msName, keepLabelKey, keepLabelValue, suiteName string,
+) (map[string]struct{}, error) {
+	const machineAPINamespace = "openshift-machine-api"
+
+	initial, err := listMachinesForMachineSet(c, msName)
+	if err != nil {
+		return nil, err
+	}
+	if len(initial.live) == 0 {
+		return nil, fmt.Errorf("no live machines found for machineset %s", msName)
+	}
+	if len(initial.deleting) > 0 {
+		return nil, fmt.Errorf("machineset %s has machines already being deleted: %v", msName, initial.deleting)
+	}
+
+	machineGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "Machine"}
+	initialMachineNames := make(map[string]struct{}, len(initial.live))
+	for machineName := range initial.live {
+		initialMachineNames[machineName] = struct{}{}
+		key := types.NamespacedName{Name: machineName, Namespace: machineAPINamespace}
+		err := updateWithConflictRetry(c, machineGVK, key, func(m *unstructured.Unstructured) error {
+			lbls := m.GetLabels()
+			if lbls == nil {
+				lbls = map[string]string{}
+			}
+			lbls[keepLabelKey] = keepLabelValue
+			lbls[keepLabelKey+"-suite"] = suiteName
+			m.SetLabels(lbls)
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to label machine %s: %w", machineName, err)
+		}
+	}
+	return initialMachineNames, nil
+}
+
+func cleanupMachineSetScaleDeletePolicyAndLabels(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	msKey types.NamespacedName,
+	msName string,
+	originalReplicas int64,
+	scaled *bool,
+	originalDeletePolicy string,
+	hadDeletePolicy bool,
+	keepLabelKey string,
+	initialMachineNames map[string]struct{},
+) {
+	const machineAPINamespace = "openshift-machine-api"
+	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+	// Restore spec.replicas only if the test actually wrote it. Anything that
+	// fails before the scale-up (a conflict on the deletePolicy update, say)
+	// leaves the MachineSet at its original size, and writing to it here would
+	// resize a MachineSet the test never touched.
+	if *scaled {
+		err := updateWithConflictRetry(c, msGVK, msKey, func(ms *unstructured.Unstructured) error {
+			return unstructured.SetNestedField(ms.Object, originalReplicas, "spec", "replicas")
+		})
+		if err != nil {
+			log.Printf("cleanup warning: failed to restore replicas for machineset %s: %v", msName, err)
+		} else if err := waitForMachineSetReadyReplicas(tc, c, msKey, originalReplicas); err != nil {
+			log.Printf("cleanup warning: failed waiting for replicas restore on machineset %s: %v", msName, err)
+		}
+	} else {
+		log.Printf("cleanup: machineset %s was never scaled, leaving spec.replicas alone", msName)
+	}
+
+	err := updateWithConflictRetry(c, msGVK, msKey, func(ms *unstructured.Unstructured) error {
+		if hadDeletePolicy {
+			return unstructured.SetNestedField(ms.Object, originalDeletePolicy, "spec", "deletePolicy")
+		}
+		unstructured.RemoveNestedField(ms.Object, "spec", "deletePolicy")
+		return nil
+	})
+	if err != nil {
+		log.Printf("cleanup warning: failed to restore deletePolicy for machineset %s: %v", msName, err)
+	}
+
+	machineGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "Machine"}
+	for machineName := range initialMachineNames {
+		key := types.NamespacedName{Name: machineName, Namespace: machineAPINamespace}
+		err := updateWithConflictRetry(c, machineGVK, key, func(m *unstructured.Unstructured) error {
+			lbls := m.GetLabels()
+			delete(lbls, keepLabelKey)
+			delete(lbls, keepLabelKey+"-suite")
+			m.SetLabels(lbls)
+			return nil
+		})
+		// A machine the scale-down removed is gone, not a cleanup failure.
+		if err != nil && !apierrors.IsNotFound(err) {
+			log.Printf("cleanup warning: failed to remove keep labels from machine %s: %v", machineName, err)
+		}
+	}
+}
+
+func setMachineSetDeletePolicyNewest(c dynclient.Client, msKey types.NamespacedName, msName string) error {
+	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+	err := updateWithConflictRetry(c, msGVK, msKey, func(ms *unstructured.Unstructured) error {
+		return unstructured.SetNestedField(ms.Object, "Newest", "spec", "deletePolicy")
+	})
+	if err != nil {
+		return fmt.Errorf("failed to set deletePolicy=Newest on machineset %s: %w", msName, err)
+	}
+	return nil
+}
+
+func verifyMachineSetDeletePolicyNewest(c dynclient.Client, msKey types.NamespacedName, msName string) error {
+	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+	verifyObj := &unstructured.Unstructured{}
+	verifyObj.SetGroupVersionKind(msGVK)
+	if err := c.Get(goctx.TODO(), msKey, verifyObj); err != nil {
+		return fmt.Errorf("failed to verify machineset %s: %w", msName, err)
+	}
+	deletePolicy, _, _ := unstructured.NestedString(verifyObj.Object, "spec", "deletePolicy")
+	if deletePolicy != "Newest" {
+		return fmt.Errorf("expected machineset %s deletePolicy to be Newest, got %q", msName, deletePolicy)
+	}
+	return nil
+}
+
+func scaleMachineSetAndWait(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	msKey types.NamespacedName,
+	replicas int64,
+	msName, direction string,
+) error {
+	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+	err := updateWithConflictRetry(c, msGVK, msKey, func(ms *unstructured.Unstructured) error {
+		return unstructured.SetNestedField(ms.Object, replicas, "spec", "replicas")
+	})
+	if err != nil {
+		return fmt.Errorf("failed to scale %s machineset %s to %d replicas: %w", direction, msName, replicas, err)
+	}
+	if err := waitForMachineSetReadyReplicas(tc, c, msKey, replicas); err != nil {
+		return fmt.Errorf("failed waiting for machineset %s scale %s: %w", msName, direction, err)
+	}
+	return nil
+}
+
+// findMachineAddedByScaleUp returns the name of the one machine that exists
+// after the scale-up but did not exist before it. That machine is the newest,
+// so deletePolicy=Newest must be the one the scale-down removes.
+func findMachineAddedByScaleUp(
+	c dynclient.Client,
+	msName string,
+	initialMachineNames map[string]struct{},
+) (string, error) {
+	current, err := listMachinesForMachineSet(c, msName)
+	if err != nil {
+		return "", err
+	}
+
+	added := make([]string, 0, 1)
+	for name := range current.live {
+		if _, existed := initialMachineNames[name]; !existed {
+			added = append(added, name)
+		}
+	}
+	if len(added) != 1 {
+		return "", fmt.Errorf(
+			"expected exactly 1 new machine for machineset %s after scale up, found %d %v",
+			msName, len(added), added,
+		)
+	}
+	return added[0], nil
+}
+
+// verifyNewestMachineDeleted asserts that the scale-down removed the machine
+// the scale-up created, and no other.
+//
+// This has to poll rather than check once. scaleMachineSetAndWait returns as
+// soon as status.readyReplicas is back to the original count, which happens
+// the moment the controller stamps a deletionTimestamp on its victim -- before
+// the Machine object goes away, and potentially before the controller has
+// picked a victim at all. Reading the machine list at that instant would see
+// every machine still present and pass no matter which one was chosen.
+func verifyNewestMachineDeleted(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	msName, newestMachineName string,
+	initialMachineNames map[string]struct{},
+) error {
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 60)
+	return backoff.RetryNotify(func() error {
+		current, err := listMachinesForMachineSet(c, msName)
+		if err != nil {
+			return err
+		}
+
+		// An original machine that is gone, or being torn down, is the exact
+		// regression this test exists to catch. Fail now rather than wait for
+		// the rest of the budget to run out.
+		for name := range initialMachineNames {
+			if !current.preserved(name) {
+				return backoff.Permanent(fmt.Errorf(
+					"machineset %s scaled down but original machine %s was deleted; expected newest machine %s to be deleted",
+					msName, name, newestMachineName,
+				))
+			}
+		}
+
+		// The newest machine is correctly on its way out once it is either
+		// marked for deletion or fully gone.
+		if current.preserved(newestMachineName) {
+			return fmt.Errorf("newest machine %s is not marked for deletion yet", newestMachineName)
+		}
+		if current.has(newestMachineName) {
+			log.Printf("machineset %s: newest machine %s is being deleted as expected", msName, newestMachineName)
+		}
+		return nil
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("waiting for machineset %s to delete newest machine %s after %s: %v",
+			msName, newestMachineName, d.String(), err)
+	})
+}
+
+func waitForMachineSetReadyReplicas(
+	tc *testConfig.TestConfig,
+	c dynclient.Client,
+	msKey types.NamespacedName,
+	expected int64,
+) error {
+	bo := backoff.WithMaxRetries(backoff.NewConstantBackOff(tc.APIPollInterval), 200)
+	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
+	return backoff.RetryNotify(func() error {
+		ms := &unstructured.Unstructured{}
+		ms.SetGroupVersionKind(msGVK)
+		if err := c.Get(goctx.TODO(), msKey, ms); err != nil {
+			return err
+		}
+		ready, found, _ := unstructured.NestedInt64(ms.Object, "status", "readyReplicas")
+		if !found {
+			ready = 0
+		}
+		if ready != expected {
+			return fmt.Errorf("readyReplicas=%d expected=%d", ready, expected)
+		}
+		return nil
+	}, bo, func(err error, d time.Duration) {
+		log.Printf("waiting for machineset %s readyReplicas=%d after %s: %v", msKey.Name, expected, d.String(), err)
+	})
 }
 
 // SaveResultAsYAML saves YAML data about the scan results to a file in the configured log directory.
