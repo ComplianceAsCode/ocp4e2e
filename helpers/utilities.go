@@ -1939,12 +1939,16 @@ func ValidateMachineSetScaleWithDeletePolicyNewest(tc *testConfig.TestConfig, c 
 		return err
 	}
 
+	// Only the code below this point changes spec.replicas, so cleanup must not
+	// write it back unless we got that far.
+	scaled := false
 	defer cleanupMachineSetScaleDeletePolicyAndLabels(
 		tc,
 		c,
 		msKey,
 		msName,
 		originalReplicas,
+		&scaled,
 		msState.deletePolicy,
 		msState.hadDeletePolicy,
 		keepLabelKey,
@@ -1958,6 +1962,9 @@ func ValidateMachineSetScaleWithDeletePolicyNewest(tc *testConfig.TestConfig, c 
 		return err
 	}
 
+	// Set before the scale-up rather than after it: scaleMachineSetAndWait can
+	// fail with spec.replicas already written, and that does need restoring.
+	scaled = true
 	targetReplicas := originalReplicas + 1
 	if err := scaleMachineSetAndWait(tc, c, msKey, targetReplicas, msName, "up"); err != nil {
 		return err
@@ -2124,6 +2131,7 @@ func cleanupMachineSetScaleDeletePolicyAndLabels(
 	msKey types.NamespacedName,
 	msName string,
 	originalReplicas int64,
+	scaled *bool,
 	originalDeletePolicy string,
 	hadDeletePolicy bool,
 	keepLabelKey string,
@@ -2131,19 +2139,27 @@ func cleanupMachineSetScaleDeletePolicyAndLabels(
 ) {
 	const machineAPINamespace = "openshift-machine-api"
 	msGVK := schema.GroupVersionKind{Group: "machine.openshift.io", Version: "v1beta1", Kind: "MachineSet"}
-	restoreObj := &unstructured.Unstructured{}
-	restoreObj.SetGroupVersionKind(msGVK)
-	if err := c.Get(goctx.TODO(), msKey, restoreObj); err != nil {
-		log.Printf("cleanup warning: failed to get machineset %s: %v", msName, err)
-	} else if err := unstructured.SetNestedField(restoreObj.Object, originalReplicas, "spec", "replicas"); err != nil {
-		log.Printf("cleanup warning: failed to set replicas on machineset %s: %v", msName, err)
-	} else if err := c.Update(goctx.TODO(), restoreObj); err != nil {
-		log.Printf("cleanup warning: failed to restore replicas for machineset %s: %v", msName, err)
-	} else if err := waitForMachineSetReadyReplicas(tc, c, msKey, originalReplicas); err != nil {
-		log.Printf("cleanup warning: failed waiting for replicas restore on machineset %s: %v", msName, err)
+	// Restore spec.replicas only if the test actually wrote it. Anything that
+	// fails before the scale-up (a conflict on the deletePolicy update, say)
+	// leaves the MachineSet at its original size, and writing to it here would
+	// resize a MachineSet the test never touched.
+	if *scaled {
+		restoreObj := &unstructured.Unstructured{}
+		restoreObj.SetGroupVersionKind(msGVK)
+		if err := c.Get(goctx.TODO(), msKey, restoreObj); err != nil {
+			log.Printf("cleanup warning: failed to get machineset %s: %v", msName, err)
+		} else if err := unstructured.SetNestedField(restoreObj.Object, originalReplicas, "spec", "replicas"); err != nil {
+			log.Printf("cleanup warning: failed to set replicas on machineset %s: %v", msName, err)
+		} else if err := c.Update(goctx.TODO(), restoreObj); err != nil {
+			log.Printf("cleanup warning: failed to restore replicas for machineset %s: %v", msName, err)
+		} else if err := waitForMachineSetReadyReplicas(tc, c, msKey, originalReplicas); err != nil {
+			log.Printf("cleanup warning: failed waiting for replicas restore on machineset %s: %v", msName, err)
+		}
+	} else {
+		log.Printf("cleanup: machineset %s was never scaled, leaving spec.replicas alone", msName)
 	}
 
-	restoreObj = &unstructured.Unstructured{}
+	restoreObj := &unstructured.Unstructured{}
 	restoreObj.SetGroupVersionKind(msGVK)
 	if err := c.Get(goctx.TODO(), msKey, restoreObj); err != nil {
 		log.Printf("cleanup warning: failed to re-get machineset %s: %v", msName, err)
